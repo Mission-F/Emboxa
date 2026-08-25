@@ -4,11 +4,11 @@
 
 <h1 align="center">EMBOXA Self-Hosted</h1>
 
-<p align="center"><strong>Your email. Archived on your terms.</strong></p>
+<p align="center"><strong>Your email. Backed up, searchable and movable with IMAP Transfer.</strong></p>
 
 <p align="center">
-  A modern, self-hosted email backup and archive for Docker and TrueNAS.<br>
-  Preserve complete IMAP mailboxes, attachments and multiple backup versions in storage you control.
+  A modern, self-hosted email backup, archive and IMAP Transfer app for Docker and TrueNAS.<br>
+  Preserve complete IMAP mailboxes, attachments and backup versions, then restore originals to Gmail, Outlook, Yahoo, iCloud or custom IMAP destinations.
 </p>
 
 <p align="center">
@@ -34,7 +34,7 @@
 - Provides a fast, webmail-style archive with search, filters and conversations.
 - Collects archived files in a dedicated Attachments view.
 - Imports and exports portable `.mailvault` archives.
-- Restores original RFC822 messages to an owned or temporary IMAP destination, with folder preservation, duplicate checks, progress and cancellation.
+- Uses IMAP Transfer to restore original RFC822 messages to Gmail, Outlook, Yahoo, iCloud or custom IMAP destinations, with folder preservation, duplicate checks, progress and cancellation.
 - Runs as a multi-architecture container on Docker-compatible servers and TrueNAS Community.
 
 ## Quick Start
@@ -83,7 +83,7 @@ For a public HTTPS reverse proxy, use the final `https://` URL and set `COOKIE_S
 ## How it works
 
 ```text
-IMAP mailbox → queued backup → versioned local archive → search / read / export / Restore to mailbox
+IMAP mailbox → queued backup → versioned local archive → search / read / export / IMAP Transfer
 ```
 
 EMBOXA first writes a staging snapshot. Only a completed, validated backup becomes the active version, so an interrupted run does not replace the previous usable archive. Saved service and IMAP credentials are encrypted using the key under `/data/secrets`.

@@ -310,7 +310,7 @@ class AdminSettingsPayload(BaseModel):
     imap_transfer_concurrency: int = Field(default=2, ge=1, le=8)
     email_logo_url: str = Field(default="", max_length=500)
     email_footer_text: str = Field(default="", max_length=500)
-    seo_default_title: str = Field(default="Emboxa Web — secure IMAP email backup", max_length=120)
+    seo_default_title: str = Field(default="Emboxa Web — email backup and IMAP Transfer", max_length=120)
     seo_default_description: str = Field(default="", max_length=320)
     export_ttl_hours: int = Field(default=24, ge=1, le=8760)
     export_max_bytes: int = Field(default=10 * 1024**3, ge=1)
@@ -487,8 +487,8 @@ PUBLIC_PAGES = {"features", "self-hosted", "imap-email-backup", "email-archive",
 
 SEO_PAGES = {
     "home": {
-        "it": ("Emboxa Web — backup, archivio e ripristino email IMAP", "Crea backup versionati, cerca messaggi e allegati e ripristina gli originali in un'altra casella con Restore to mailbox.", "backup email IMAP, archivio email, ripristino casella email, trasferimento email IMAP"),
-        "en": ("Emboxa Web — back up, archive and restore IMAP email", "Create versioned backups, search messages and attachments, then restore the originals to another mailbox with Restore to mailbox.", "IMAP email backup, email archive, restore email to mailbox, IMAP email transfer"),
+        "it": ("Emboxa Web — backup email e IMAP Transfer", "Crea backup versionati, cerca messaggi e allegati e usa IMAP Transfer per ripristinare gli originali in Gmail, Outlook, Yahoo, iCloud o caselle IMAP custom.", "backup email IMAP, IMAP Transfer, archivio email, ripristino casella email, trasferimento email IMAP"),
+        "en": ("Emboxa Web — email backup and IMAP Transfer", "Create versioned backups, search messages and attachments, then use IMAP Transfer to restore originals to Gmail, Outlook, Yahoo, iCloud or custom IMAP mailboxes.", "IMAP email backup, IMAP Transfer, email archive, restore email to mailbox, mailbox migration"),
     },
     "imap-email-backup": {
         "it": ("Backup email IMAP completo e versionato — Emboxa", "Copia messaggi, cartelle e allegati da qualsiasi provider IMAP in un archivio ricercabile e ripristinabile.", "backup email IMAP, backup posta elettronica, copia casella IMAP"),
@@ -520,8 +520,8 @@ def localized_public(request: Request, page: str = "home"):
     public_url = get_setting("public_domain", PUBLIC_APP_URL).rstrip("/")
     analytics_id = get_setting("google_analytics_id", GOOGLE_ANALYTICS_ID) if get_bool_setting("analytics_enabled") else ""
     canonical = f"{public_url}/{locale}/" + ("" if page == "home" else page)
-    fallback_title = get_setting("seo_default_title", "Emboxa Web — secure IMAP email backup")
-    fallback_description = get_setting("seo_default_description") or "Versioned IMAP email backup and searchable email archive."
+    fallback_title = get_setting("seo_default_title", "Emboxa Web — email backup and IMAP Transfer")
+    fallback_description = get_setting("seo_default_description") or "Versioned IMAP email backup, searchable email archive and IMAP Transfer restore."
     seo_title, seo_description, seo_keywords = SEO_PAGES.get(page, {}).get(locale, (
         f"{page.replace('-', ' ').title()} — Emboxa Web", fallback_description, "IMAP backup, email archive"
     ))
@@ -875,7 +875,7 @@ def admin_settings(_admin: User = Depends(admin_user), db: Session = Depends(get
         "imap_transfer_concurrency": get_int_setting("imap_transfer_concurrency", 2, db),
         "email_logo_url": get_setting("email_logo_url", db=db),
         "email_footer_text": get_setting("email_footer_text", db=db),
-        "seo_default_title": get_setting("seo_default_title", "Emboxa Web — secure IMAP email backup", db),
+        "seo_default_title": get_setting("seo_default_title", "Emboxa Web — email backup and IMAP Transfer", db),
         "seo_default_description": get_setting("seo_default_description", db=db),
         "export_ttl_hours": get_int_setting("export_ttl_hours", EXPORT_TTL_HOURS, db),
         "export_max_bytes": get_int_setting("export_max_bytes", 10 * 1024**3, db),
