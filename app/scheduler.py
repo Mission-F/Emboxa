@@ -56,7 +56,7 @@ class IntegratedScheduler:
     def cleanup(self) -> None:
         now = utcnow(); paths: list[Path] = []
         with SessionLocal() as db:
-            for item in db.scalars(select(WebExport).where(WebExport.expires_at <= now)).all():
+            for item in db.scalars(select(WebExport).where(WebExport.expires_at.is_not(None), WebExport.expires_at <= now)).all():
                 paths.append(EXPORTS_DIR / item.relpath); db.delete(item)
             for token in db.scalars(select(SecurityToken).where(SecurityToken.expires_at <= now)).all():
                 db.delete(token)

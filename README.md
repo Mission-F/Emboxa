@@ -147,7 +147,9 @@ For TrueNAS, snapshot or copy the complete host dataset while the app is stopped
 
 ## Import and export
 
-Use **Import archive** in the sidebar to validate and load a `.mailvault` package. Open the `…` menu on a mailbox and choose **Export archive** to create a portable copy. Keep important exports outside the live application volume as an additional backup.
+Use **Import archive** in the sidebar to validate and load a `.mailvault` package. Open the `…` menu on a mailbox and choose **Export archive** to create a portable copy. EMBOXA first prepares the export in the server-side exports folder, then streams it through the browser and starts the local `.mailvault` download with a short-lived browser object URL.
+
+Admins can set **Export TTL (hours)** to `0` to keep generated export packages indefinitely. Standard users still count active exports against their storage quota. PLUS users ignore export size, storage and duration limits, so their exports are kept until manually removed or the user is deleted.
 
 ## Restore to mailbox (IMAP Transfer)
 

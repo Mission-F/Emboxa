@@ -281,7 +281,7 @@ class WebExport(Base):
     filename: Mapped[str] = mapped_column(String(500))
     relpath: Mapped[str] = mapped_column(String(500))
     size: Mapped[int] = mapped_column(BigInteger, default=0)
-    expires_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 

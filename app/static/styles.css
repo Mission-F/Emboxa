@@ -546,6 +546,19 @@ html, body { max-width: 100%; overflow-x: hidden; }
 .activity-job p { margin: 0; color: var(--text-secondary); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .activity-metrics { display: flex; flex-wrap: wrap; gap: 7px 13px; margin-bottom: 10px; color: var(--text-secondary); font-size: 10px; }
 .activity-job > button { min-height: 40px; }
+.export-dialog { width: min(620px, calc(100% - 24px)); }
+.export-dialog .dialog-actions { margin: 0; padding: 0 22px 22px; }
+.export-flow { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; padding: 16px 22px; }
+.export-flow article { display: grid; gap: 4px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-secondary); }
+.export-flow b { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; background: var(--border); color: var(--text-secondary); font-size: 12px; }
+.export-flow span { color: var(--heading); font-weight: 850; }
+.export-flow small { color: var(--text-secondary); line-height: 1.35; }
+.export-flow article.active { border-color: var(--accent); background: var(--accent-soft); }
+.export-flow article.active b, .export-flow article.done b { background: var(--accent); color: var(--black); }
+.export-flow article.done { border-color: rgba(32, 163, 106, .45); }
+.export-progress { padding: 0 22px 10px; }
+.export-progress > div:first-child { display: flex; justify-content: space-between; gap: 14px; color: var(--text-secondary); font-size: 12px; font-weight: 800; }
+#export-detail { margin: 0; padding: 0 22px 20px; }
 .versions-dialog { width: min(760px, calc(100% - 24px)); }
 .version-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-bottom: 10px; padding: 15px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-secondary); }
 .version-row.current { border-color: var(--accent); }
@@ -573,6 +586,7 @@ html, body { max-width: 100%; overflow-x: hidden; }
   #activity-summary { overflow: hidden; text-overflow: ellipsis; }
   .activity-dialog { width: 100%; max-width: none; max-height: 92dvh; margin: auto 0 0; border-radius: 20px 20px 0 0; }
   .activity-content { max-height: 72dvh; }
+  .export-flow { grid-template-columns: 1fr; }
   .dialog input, .dialog select, .auth-card input { font-size: 16px; }
   button, .icon-button, .folder-item, .nav-item { min-height: 44px; }
 }

@@ -312,7 +312,7 @@ class AdminSettingsPayload(BaseModel):
     email_footer_text: str = Field(default="", max_length=500)
     seo_default_title: str = Field(default="Emboxa Web — email backup and IMAP Transfer", max_length=120)
     seo_default_description: str = Field(default="", max_length=320)
-    export_ttl_hours: int = Field(default=24, ge=1, le=8760)
+    export_ttl_hours: int = Field(default=24, ge=0, le=8760)
     export_max_bytes: int = Field(default=10 * 1024**3, ge=1)
     cleanup_enabled: bool = True
     analytics_enabled: bool = False
@@ -1732,19 +1732,32 @@ def remove_account(account_id: int, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
-@app.get("/api/accounts/{account_id}/export", dependencies=[Depends(current_user)])
-def export_account(account_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+def _active_export_size(db: Session, user_id: int) -> int:
+    return int(db.scalar(select(func.coalesce(func.sum(WebExport.size), 0)).where(
+        WebExport.owner_id == user_id,
+        (WebExport.expires_at.is_(None) | (WebExport.expires_at > utcnow())),
+    )) or 0)
+
+
+def _export_expiry(user: User, db: Session) -> datetime | None:
+    if user.plan == "PLUS":
+        return None
+    ttl_hours = get_int_setting("export_ttl_hours", EXPORT_TTL_HOURS, db)
+    return None if ttl_hours <= 0 else utcnow() + timedelta(hours=ttl_hours)
+
+
+def _create_export(account_id: int, user: User, db: Session) -> WebExport:
     account = _account_or_404(db, account_id)
-    temporary = db.scalar(select(func.coalesce(func.sum(WebExport.size), 0)).where(
-        WebExport.owner_id == user.id, WebExport.expires_at > utcnow())) or 0
-    if user.plan != "PLUS" and _storage_used(db, user.id) + temporary + account.archive_size > user.storage_limit_bytes:
+    if account.owner_id != user.id:
+        raise HTTPException(404, "Account non trovato")
+    if user.plan != "PLUS" and _storage_used(db, user.id) + _active_export_size(db, user.id) + account.archive_size > user.storage_limit_bytes:
         raise HTTPException(409, f"Storage limit reached. Contact the administrator at {_contact_email()}")
     try:
         path, filename = build_export(account_id)
     except ArchiveError as exc:
         raise HTTPException(400, str(exc)) from exc
     export_max = get_int_setting("export_max_bytes", 10 * 1024**3, db)
-    if path.stat().st_size > export_max:
+    if user.plan != "PLUS" and path.stat().st_size > export_max:
         path.unlink(missing_ok=True)
         shutil.rmtree(path.parent, ignore_errors=True)
         raise HTTPException(413, "Export exceeds the configured maximum size")
@@ -1754,20 +1767,41 @@ def export_account(account_id: int, user: User = Depends(current_user), db: Sess
     shutil.move(str(path), destination); shutil.rmtree(path.parent, ignore_errors=True)
     item = WebExport(public_id=public_id, owner_id=user.id, account_id=account_id, filename=filename,
                      relpath=str(destination.relative_to(EXPORTS_DIR)), size=destination.stat().st_size,
-                     expires_at=utcnow() + timedelta(hours=get_int_setting("export_ttl_hours", EXPORT_TTL_HOURS, db)))
+                     expires_at=_export_expiry(user, db))
     db.add(item); db.commit()
-    return RedirectResponse(f"/api/exports/{public_id}/download", status_code=303)
+    db.refresh(item)
+    return item
+
+
+@app.post("/api/accounts/{account_id}/export", dependencies=[Depends(csrf_guard)])
+def create_export(account_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    item = _create_export(account_id, user, db)
+    return {
+        "id": item.public_id,
+        "filename": item.filename,
+        "size": item.size,
+        "expires_at": item.expires_at,
+        "persistent": item.expires_at is None,
+        "download_url": f"/api/exports/{item.public_id}/download",
+    }
+
+
+@app.get("/api/accounts/{account_id}/export", dependencies=[Depends(current_user)])
+def export_account(account_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    item = _create_export(account_id, user, db)
+    return RedirectResponse(f"/api/exports/{item.public_id}/download", status_code=303)
 
 
 @app.get("/api/exports/{public_id}/download")
 def download_export(public_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
     item = db.scalar(select(WebExport).where(WebExport.public_id == public_id, WebExport.owner_id == user.id))
-    if not item or item.expires_at < utcnow():
+    if not item or (item.expires_at is not None and item.expires_at < utcnow()):
         raise HTTPException(404, "Export expired or unavailable")
     path = safe_resolve(EXPORTS_DIR, item.relpath)
     if not path.is_file():
         raise HTTPException(404, "Export unavailable")
-    return FileResponse(path, filename=item.filename, media_type="application/vnd.mailvault+zip")
+    return FileResponse(path, filename=item.filename, media_type="application/vnd.mailvault+zip",
+                        headers={"Cache-Control": "no-store"})
 
 
 @app.post("/api/import", dependencies=[Depends(csrf_guard)])

@@ -144,6 +144,38 @@ def run_migrations() -> None:
             ))
             conn.execute(text("INSERT OR IGNORE INTO schema_migrations(version) VALUES (8)"))
 
+    if 9 not in applied:
+        log.info("Applying database migration 9 (permanent web exports)")
+        Base.metadata.create_all(engine)
+        with engine.begin() as conn:
+            inspector = inspect(conn)
+            if "web_exports" in inspector.get_table_names():
+                columns = {column["name"]: column for column in inspector.get_columns("web_exports")}
+                expires_column = columns.get("expires_at")
+                if expires_column and not expires_column.get("nullable", True) and engine.dialect.name == "sqlite":
+                    conn.execute(text("ALTER TABLE web_exports RENAME TO web_exports_old_m9"))
+                    conn.execute(text(
+                        "CREATE TABLE web_exports ("
+                        "id INTEGER NOT NULL, public_id VARCHAR(36) NOT NULL, owner_id INTEGER NOT NULL, "
+                        "account_id INTEGER NOT NULL, filename VARCHAR(500) NOT NULL, relpath VARCHAR(500) NOT NULL, "
+                        "size BIGINT NOT NULL, expires_at DATETIME, created_at DATETIME NOT NULL, "
+                        "PRIMARY KEY (id), UNIQUE (public_id), "
+                        "FOREIGN KEY(owner_id) REFERENCES users (id) ON DELETE CASCADE, "
+                        "FOREIGN KEY(account_id) REFERENCES accounts (id) ON DELETE CASCADE)"
+                    ))
+                    conn.execute(text(
+                        "INSERT INTO web_exports "
+                        "(id, public_id, owner_id, account_id, filename, relpath, size, expires_at, created_at) "
+                        "SELECT id, public_id, owner_id, account_id, filename, relpath, size, expires_at, created_at "
+                        "FROM web_exports_old_m9"
+                    ))
+                    conn.execute(text("DROP TABLE web_exports_old_m9"))
+                    conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_web_exports_public_id ON web_exports(public_id)"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_web_exports_owner_id ON web_exports(owner_id)"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_web_exports_account_id ON web_exports(account_id)"))
+                    conn.execute(text("CREATE INDEX IF NOT EXISTS ix_web_exports_expires_at ON web_exports(expires_at)"))
+            conn.execute(text("INSERT OR IGNORE INTO schema_migrations(version) VALUES (9)"))
+
     # Fail clearly if the Python SQLite build unexpectedly lacks FTS5.
     with engine.connect() as conn:
         if "message_fts" not in inspect(conn).get_table_names():

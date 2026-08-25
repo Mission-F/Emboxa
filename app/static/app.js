@@ -138,6 +138,73 @@ async function confirmAction(title, message) {
   return new Promise(resolve => dialog.addEventListener('close', () => resolve(dialog.returnValue === 'ok'), {once:true}));
 }
 
+const exportStepOrder = {prepare: 1, browser: 2, save: 3};
+function exportStep(step, status = 'active') {
+  $$('[data-export-step]').forEach(node => {
+    const current = node.dataset.exportStep;
+    const done = exportStepOrder[current] < exportStepOrder[step] || (current === step && status === 'done');
+    node.classList.toggle('active', current === step && status === 'active');
+    node.classList.toggle('done', done);
+  });
+}
+function exportProgress(status, percent = 0, detail = '') {
+  $('#export-status').textContent = status;
+  $('#export-percent').textContent = `${Math.max(0, Math.min(100, Math.round(percent)))}%`;
+  $('#export-progress-bar').style.width = `${Math.max(0, Math.min(100, Math.round(percent)))}%`;
+  $('#export-detail').textContent = detail;
+}
+function saveBlobDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url; link.download = filename; link.rel = 'noopener'; link.style.display = 'none';
+  document.body.append(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+async function responseToBlobWithProgress(response, fallbackSize = 0) {
+  const total = Number(response.headers.get('content-length') || fallbackSize || 0);
+  if (!response.body) return response.blob();
+  const reader = response.body.getReader(), chunks = [];
+  let received = 0;
+  while (true) {
+    const {done, value} = await reader.read();
+    if (done) break;
+    chunks.push(value); received += value.byteLength;
+    exportProgress('Download nel browser…', total ? received / total * 100 : 55, total ? `${bytes(received)} / ${bytes(total)}` : `${bytes(received)} scaricati`);
+  }
+  return new Blob(chunks, {type: response.headers.get('content-type') || 'application/vnd.mailvault+zip'});
+}
+async function exportArchive(accountId) {
+  const dialog = $('#export-dialog');
+  $('#export-close').disabled = true; $('#export-done').disabled = true;
+  $$('[data-export-step]').forEach(node => node.classList.remove('active', 'done'));
+  $('#export-summary').textContent = 'Creo un pacchetto .mailvault locale sul server.';
+  exportStep('prepare'); exportProgress('Preparazione export locale…', 8, 'L’archivio viene impacchettato nella cartella exports di EMBOXA.');
+  dialog.showModal();
+  try {
+    const info = await api(`/api/accounts/${accountId}/export`, {method:'POST'});
+    exportStep('prepare', 'done');
+    $('#export-summary').textContent = `${info.filename} · ${bytes(info.size)}`;
+    exportProgress('Export locale pronto', 28, info.persistent ? 'Conservazione server: senza scadenza.' : `Conservazione server fino a ${date(info.expires_at)}.`);
+    exportStep('browser');
+    const response = await fetch(info.download_url, {credentials:'same-origin'});
+    if (response.status === 401) { location.href = '/login'; throw new Error('Sessione scaduta'); }
+    if (!response.ok) throw new Error(`Download non disponibile (${response.status})`);
+    const blob = await responseToBlobWithProgress(response, info.size);
+    exportStep('browser', 'done');
+    exportStep('save');
+    exportProgress('Salvataggio sul PC…', 96, 'Il browser sta ricevendo il file effettivo. Il link locale temporaneo viene revocato dopo pochi secondi.');
+    saveBlobDownload(blob, info.filename);
+    exportStep('save', 'done');
+    exportProgress('Export completato', 100, 'Download avviato. Il file .mailvault resta nella cartella download scelta dal browser.');
+    toast('Export completato');
+  } catch (error) {
+    exportProgress('Export non completato', 0, error.message);
+    toast(error.message, 'error');
+  } finally {
+    $('#export-close').disabled = false; $('#export-done').disabled = false;
+  }
+}
+
 document.addEventListener('click', async event => {
   if (!event.target.closest('.menu') && state.openAccountMenuId !== null) closeAccountMenus();
   const close = event.target.closest('[data-close]'); if (close) return $(`#${close.dataset.close}`).close();
@@ -152,7 +219,7 @@ document.addEventListener('click', async event => {
     if (button.dataset.action === 'test-saved') { button.disabled=true; const result=await api(`/api/accounts/${id}/test`,{method:'POST'}); toast(`Connessione riuscita · ${result.folders} cartelle`); button.disabled=false; }
     if (button.dataset.action === 'open') await openArchive(account);
     if (button.dataset.action === 'transfer') await openTransfer(id);
-    if (button.dataset.action === 'export') location.href = `/api/accounts/${id}/export`;
+    if (button.dataset.action === 'export') await exportArchive(id);
     if (button.dataset.action === 'permanent' && await confirmAction('Make permanent?', 'Standard plans can change the permanent mailbox only after the 31-day lock.')) { await api(`/api/accounts/${id}/permanent`,{method:'POST'});toast('Permanent mailbox updated');loadAccounts(); }
     if (button.dataset.action === 'clear' && await confirmAction('Cancellare l’archivio locale?', 'La configurazione IMAP resterà salvata, ma EML e allegati locali saranno rimossi.')) { await api(`/api/accounts/${id}/archive`,{method:'DELETE'}); toast('Archivio cancellato'); loadAccounts(); }
     if (button.dataset.action === 'delete' && await confirmAction('Eliminare account e archivio?', 'Questa operazione elimina configurazione, EML e allegati locali. Non modifica il server email.')) { await api(`/api/accounts/${id}`,{method:'DELETE'}); toast('Account eliminato'); loadAccounts(); }

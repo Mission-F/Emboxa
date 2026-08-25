@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
+import tempfile
 from datetime import timedelta
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from sqlalchemy import select
@@ -32,6 +34,13 @@ def login(client: TestClient, email: str, password: str) -> dict[str, str]:
     response = client.post("/api/login", json={"username": email, "password": password})
     assert response.status_code == 200, response.text
     return csrf(client)
+
+
+def fake_export_file(name: str, content: bytes) -> tuple:
+    temp_dir = Path(tempfile.mkdtemp(prefix="test-export-", dir=EXPORTS_DIR))
+    path = temp_dir / name
+    path.write_bytes(content)
+    return path, name
 
 
 def test_web_multitenant_plans_retention_cleanup_telegram_and_public(monkeypatch):
@@ -137,3 +146,73 @@ def test_web_multitenant_plans_retention_cleanup_telegram_and_public(monkeypatch
         assert "x-default" in client.get("/sitemap.xml").text
         assert client.get("/en/imap-email-backup").status_code == 200
         assert "noindex" in client.get("/app").headers["x-robots-tag"]
+
+
+def test_standard_export_can_be_kept_forever_when_admin_sets_zero_ttl(monkeypatch):
+    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(main, "build_export", lambda _account_id: fake_export_file("standard.mailvault", b"standard-export"))
+    with SessionLocal() as db:
+        user = User(username="standard-export@example.com", email="standard-export@example.com",
+                    password_hash=hash_password("standard-export-password"), verified_at=utcnow(),
+                    plan="STANDARD", storage_limit_bytes=1024 * 1024)
+        db.add(user); db.flush()
+        account = Account(owner_id=user.id, archive_uuid="00000000-0000-0000-0000-000000000501",
+                          display_name="Standard Export", email="standard-export@example.com",
+                          imap_enabled=False, mailbox_identity="standard-export", archive_size=64)
+        db.add(account)
+        db.merge(AppSetting(key="export_ttl_hours", value="0"))
+        db.commit(); account_id = account.id
+
+    with TestClient(app) as client:
+        headers = login(client, "standard-export@example.com", "standard-export-password")
+        response = client.post(f"/api/accounts/{account_id}/export", headers=headers)
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["persistent"] is True and payload["expires_at"] is None
+        download = client.get(payload["download_url"])
+        assert download.status_code == 200 and download.content == b"standard-export"
+
+    with SessionLocal() as db:
+        item = db.scalar(select(WebExport).where(WebExport.owner_id == user.id))
+        export_path = EXPORTS_DIR / item.relpath
+        assert item.expires_at is None and export_path.exists()
+        scheduler.cleanup()
+        assert export_path.exists()
+        db.delete(user)
+        setting = db.get(AppSetting, "export_ttl_hours")
+        if setting: db.delete(setting)
+        db.commit()
+
+
+def test_plus_exports_ignore_size_storage_and_duration_limits(monkeypatch):
+    EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(main, "build_export", lambda _account_id: fake_export_file("plus.mailvault", b"plus-export"))
+    with SessionLocal() as db:
+        user = User(username="plus-export@example.com", email="plus-export@example.com",
+                    password_hash=hash_password("plus-export-password"), verified_at=utcnow(),
+                    plan="PLUS", storage_limit_bytes=1)
+        db.add(user); db.flush()
+        account = Account(owner_id=user.id, archive_uuid="00000000-0000-0000-0000-000000000502",
+                          display_name="Plus Export", email="plus-export@example.com",
+                          imap_enabled=False, mailbox_identity="plus-export", archive_size=10 * 1024**3)
+        db.add(account)
+        db.merge(AppSetting(key="export_ttl_hours", value="1"))
+        db.merge(AppSetting(key="export_max_bytes", value="1"))
+        db.commit(); account_id = account.id
+
+    with TestClient(app) as client:
+        headers = login(client, "plus-export@example.com", "plus-export-password")
+        response = client.post(f"/api/accounts/{account_id}/export", headers=headers)
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["persistent"] is True and payload["expires_at"] is None and payload["size"] > 1
+        assert client.get(payload["download_url"]).content == b"plus-export"
+
+    with SessionLocal() as db:
+        item = db.scalar(select(WebExport).where(WebExport.owner_id == user.id))
+        assert item.expires_at is None
+        db.delete(user)
+        for key in ("export_ttl_hours", "export_max_bytes"):
+            setting = db.get(AppSetting, key)
+            if setting: db.delete(setting)
+        db.commit()

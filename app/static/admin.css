@@ -45,6 +45,7 @@
 .settings-grid input:focus, .settings-grid select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(252, 163, 17, .13); }
 .settings-grid small { min-height: 17px; color: var(--text-secondary); font-weight: 500; }
 .settings-grid .span-2 { grid-column: 1 / -1; }
+.settings-hint { margin: 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-secondary); color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 .switch-row { display: flex !important; flex-direction: row; align-items: center !important; gap: 9px !important; min-height: 44px; }
 .switch-row input { width: 20px; height: 20px; accent-color: var(--accent); }
 .secret-field { position: relative; }
