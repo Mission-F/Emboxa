@@ -24,7 +24,7 @@
 .admin-stats b { color: var(--heading); font-size: 24px; }
 .admin-stats span, .maintenance-grid span { color: var(--text-secondary); font-size: 11px; }
 .admin-table { display: grid; gap: 8px; }
-.admin-table article { display: grid; grid-template-columns: 1.8fr 1.35fr 120px 130px 165px 80px; align-items: end; gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: 11px; background: var(--surface); }
+.admin-table article { display: grid; grid-template-columns: 1.8fr 1.35fr 120px 130px 165px 145px; align-items: end; gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: 11px; background: var(--surface); }
 .admin-table article > div { min-width: 0; display: grid; gap: 3px; }
 .admin-table span { color: var(--text-secondary); font-size: 10px; overflow-wrap: anywhere; }
 .admin-table label { display: grid; gap: 4px; color: var(--text-secondary); font-size: 9px; font-weight: 750; }
@@ -85,3 +85,4 @@
   .settings-grid input:not([type=checkbox]), .settings-grid select, .admin-table input, .admin-table select { font-size: 16px; }
   .sticky-save { bottom: 7px; }
 }
+.admin-user-actions { display:grid; gap:7px; }

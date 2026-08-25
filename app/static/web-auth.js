@@ -4,7 +4,10 @@ const authLocale = document.querySelector('.auth-locale');
 const localePreference = localStorage.getItem('emboxa-locale') || 'auto';
 
 function applyAuthLocale(preference) {
-  return window.EMBOXA_I18N?.apply(preference) || 'en';
+  const locale = window.EMBOXA_I18N?.apply(preference) || 'en';
+  const intro = document.querySelector('.auth-form-wrap > p.muted');
+  if (intro && document.querySelector('#login-form')) intro.textContent = window.EMBOXA_I18N.t('loginIntro', preference);
+  return locale;
 }
 if (authLocale) {
   authLocale.value = localePreference;

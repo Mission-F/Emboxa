@@ -15,6 +15,12 @@
   const sharedDe = {...sharedEn, welcomeBack:"Willkommen zurück", loginIntro:"Melden Sie sich bei Ihrem Emboxa-Webarchiv an.", email:"E-Mail", password:"Passwort", logIn:"Anmelden", forgotPassword:"Passwort vergessen?", noAccount:"Noch kein Konto?", createAccount:"Konto erstellen", confirmPassword:"Passwort bestätigen", verifyEmail:"E-Mail bestätigen", verificationCode:"Bestätigungscode", verify:"Bestätigen", resendCode:"Code erneut senden", resetPassword:"Passwort zurücksetzen", sendResetLink:"Link senden", backToLogin:"Zurück zur Anmeldung", language:"Sprache", settings:"Einstellungen"};
   const sharedEs = {...sharedEn, welcomeBack:"Bienvenido de nuevo", loginIntro:"Accede a tu archivo de Emboxa Web.", email:"Correo", password:"Contraseña", logIn:"Iniciar sesión", forgotPassword:"¿Olvidaste la contraseña?", noAccount:"¿No tienes una cuenta?", createAccount:"Crear cuenta", confirmPassword:"Confirmar contraseña", verifyEmail:"Verifica tu correo", verificationCode:"Código de verificación", verify:"Verificar", resendCode:"Reenviar código", resetPassword:"Restablecer contraseña", sendResetLink:"Enviar enlace", backToLogin:"Volver al inicio", language:"Idioma", settings:"Preferencias"};
   const sharedPt = {...sharedEn, welcomeBack:"Bem-vindo de volta", loginIntro:"Aceda ao seu arquivo Emboxa Web.", email:"E-mail", password:"Palavra-passe", logIn:"Entrar", forgotPassword:"Esqueceu a palavra-passe?", noAccount:"Ainda não tem conta?", createAccount:"Criar conta", confirmPassword:"Confirmar palavra-passe", verifyEmail:"Verifique o seu e-mail", verificationCode:"Código de verificação", verify:"Verificar", resendCode:"Reenviar código", resetPassword:"Redefinir palavra-passe", sendResetLink:"Enviar ligação", backToLogin:"Voltar ao login", language:"Idioma", settings:"Preferências"};
+  Object.assign(sharedIt, {welcomeTagline:"La tua email. Archiviata come vuoi tu.", welcomeStep3:"Consulta, esporta o ripristina l’archivio", loginIntro:"Accedi per creare backup, consultare o ripristinare il tuo archivio email."});
+  Object.assign(sharedEn, {welcomeTagline:"Your email. Archived your way.", welcomeStep3:"Browse, export or restore your archive", loginIntro:"Sign in to back up, browse or restore your email archive."});
+  Object.assign(sharedFr, {welcomeTagline:"Vos e-mails, archivés à votre façon.", welcomeStep3:"Consultez, exportez ou restaurez votre archive", loginIntro:"Connectez-vous pour sauvegarder, consulter ou restaurer vos e-mails."});
+  Object.assign(sharedDe, {welcomeTagline:"Ihre E-Mails. Nach Ihren Wünschen archiviert.", welcomeStep3:"Archiv durchsuchen, exportieren oder wiederherstellen", loginIntro:"Melden Sie sich an, um E-Mails zu sichern, zu durchsuchen oder wiederherzustellen."});
+  Object.assign(sharedEs, {welcomeTagline:"Tu correo, archivado a tu manera.", welcomeStep3:"Consulta, exporta o restaura tu archivo", loginIntro:"Inicia sesión para copiar, consultar o restaurar tu correo."});
+  Object.assign(sharedPt, {welcomeTagline:"O seu e-mail, arquivado à sua maneira.", welcomeStep3:"Consulte, exporte ou restaure o arquivo", loginIntro:"Entre para fazer backup, consultar ou restaurar o seu e-mail."});
   const messages = {it: sharedIt, en: sharedEn, fr: sharedFr, de: sharedDe, es: sharedEs, pt: sharedPt};
   const detected = () => (navigator.languages || [navigator.language || "en"]).map(value => value.toLowerCase().split("-")[0]).find(value => messages[value]) || "en";
   const resolve = preference => preference === "auto" ? detected() : (messages[preference] ? preference : "en");
@@ -24,5 +30,29 @@
     document.querySelectorAll("[data-i18n]").forEach(node => { const value = messages[locale][node.dataset.i18n]; if (value) node.textContent = value; });
     return locale;
   };
-  window.EMBOXA_I18N = {messages, detected, resolve, apply, t: (key, preference = "auto") => messages[resolve(preference)][key] || key};
+  const languageNames = {auto:"Automatic",it:"Italiano",en:"English",fr:"Français",de:"Deutsch",es:"Español",pt:"Português"};
+  const syncLanguageMenus = () => document.querySelectorAll(".language-menu").forEach(menu => {
+    const select = menu.querySelector("select");
+    if (!select) return;
+    menu.querySelectorAll("[data-language-value]").forEach(button => {
+      button.classList.toggle("active", button.dataset.languageValue === select.value);
+      button.setAttribute("aria-checked", String(button.dataset.languageValue === select.value));
+    });
+    const current = menu.querySelector("[data-language-current]");
+    if (current) current.textContent = languageNames[select.value] || languageNames.auto;
+  });
+  const bindLanguageMenus = () => document.querySelectorAll(".language-menu").forEach(menu => {
+    if (menu.dataset.bound) return;
+    menu.dataset.bound = "true";
+    const select = menu.querySelector("select");
+    menu.querySelectorAll("[data-language-value]").forEach(button => button.addEventListener("click", () => {
+      select.value = button.dataset.languageValue;
+      select.dispatchEvent(new Event("change", {bubbles:true}));
+      menu.open = false;
+      syncLanguageMenus();
+    }));
+    select?.addEventListener("change", syncLanguageMenus);
+  });
+  window.EMBOXA_I18N = {messages, detected, resolve, apply, syncLanguageMenus, t: (key, preference = "auto") => messages[resolve(preference)][key] || key};
+  document.addEventListener("DOMContentLoaded", () => { bindLanguageMenus(); syncLanguageMenus(); });
 })();

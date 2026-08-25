@@ -34,7 +34,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from .archive import ArchiveError, build_export, clear_account_archive, delete_account, import_archive
 from .backup import backup_manager, next_backup_time, recover_interrupted_jobs, rotate_versions, snapshot_root
 from .config import (
-    ADMIN_EMAIL, ADMIN_PASSWORD, COOKIE_SECURE, DATA_DIR, EXPORTS_DIR, EXPORT_TTL_HOURS, IMPORTS_DIR, IMPORT_MAX_BYTES,
+    ADMIN_EMAIL, ADMIN_PASSWORD, ARCHIVES_DIR, COOKIE_SECURE, DATA_DIR, EXPORTS_DIR, EXPORT_TTL_HOURS, IMPORTS_DIR, IMPORT_MAX_BYTES,
     GITHUB_REPOSITORY_URL, GOOGLE_ANALYTICS_ID, LEGAL_ADDRESS, LEGAL_CONTACT_EMAIL, LEGAL_ENTITY_NAME, LEGAL_VAT_ID,
     LOG_LEVEL, PERMANENT_MAILBOX_LOCK_DAYS, PUBLIC_APP_URL, SMTP_FROM_EMAIL, SMTP_FROM_NAME,
     SMTP_HOST, SMTP_PASSWORD, SMTP_PORT, SMTP_SECURITY, SMTP_USERNAME, STANDARD_MAILBOX_LIMIT,
@@ -272,6 +272,10 @@ class AdminUserPayload(BaseModel):
     confirm_downgrade: bool = False
 
 
+class AdminDeleteUserPayload(BaseModel):
+    confirmation: str = Field(min_length=3, max_length=320)
+
+
 class AdminSettingsPayload(BaseModel):
     smtp_enabled: bool = False
     smtp_host: str = ""
@@ -478,13 +482,13 @@ def public_home(request: Request):
     return RedirectResponse(f"/{locale if locale in available else ('en' if 'en' in available else available[0])}/", status_code=307)
 
 
-PUBLIC_PAGES = {"features", "self-hosted", "imap-email-backup", "email-archive", "truenas-email-backup",
+PUBLIC_PAGES = {"features", "self-hosted", "imap-email-backup", "email-archive", "restore-email-to-mailbox", "truenas-email-backup",
                 "privacy", "cookies", "legal", "terms"}
 
 SEO_PAGES = {
     "home": {
-        "it": ("Emboxa Web — backup IMAP e archivio email", "Backup versionati delle caselle IMAP, ricerca full-text, allegati originali e ripristino RFC822. Piano Standard gratuito e versione self-hosted.", "backup email IMAP, archivio email, backup casella email, ripristino IMAP"),
-        "en": ("Emboxa Web — secure IMAP email backup", "Versioned IMAP mailbox backup, full-text search, original attachments and RFC822 restore. Free Standard plan and self-hosted edition.", "IMAP email backup, email archive, mailbox backup, IMAP restore"),
+        "it": ("Emboxa Web — backup, archivio e ripristino email IMAP", "Crea backup versionati, cerca messaggi e allegati e ripristina gli originali in un'altra casella con Restore to mailbox.", "backup email IMAP, archivio email, ripristino casella email, trasferimento email IMAP"),
+        "en": ("Emboxa Web — back up, archive and restore IMAP email", "Create versioned backups, search messages and attachments, then restore the originals to another mailbox with Restore to mailbox.", "IMAP email backup, email archive, restore email to mailbox, IMAP email transfer"),
     },
     "imap-email-backup": {
         "it": ("Backup email IMAP completo e versionato — Emboxa", "Copia messaggi, cartelle e allegati da qualsiasi provider IMAP in un archivio ricercabile e ripristinabile.", "backup email IMAP, backup posta elettronica, copia casella IMAP"),
@@ -493,6 +497,10 @@ SEO_PAGES = {
     "email-archive": {
         "it": ("Archivio email ricercabile con allegati originali — Emboxa", "Conserva versioni separate della casella, cerca messaggi e allegati e ripristina gli originali RFC822.", "archivio email, conservazione email, ricerca allegati email"),
         "en": ("Searchable email archive with original attachments — Emboxa", "Keep separate mailbox versions, search messages and attachments, and restore original RFC822 content.", "email archive, searchable email backup, email attachments archive"),
+    },
+    "restore-email-to-mailbox": {
+        "it": ("Ripristina un archivio email in un'altra casella — Emboxa", "Copia i messaggi originali RFC822 da un backup Emboxa a Gmail, Outlook, Yahoo, iCloud o una casella IMAP personalizzata, preservando le cartelle.", "ripristino email IMAP, trasferire email tra caselle, restore mailbox, migrazione email"),
+        "en": ("Restore an email archive to another mailbox — Emboxa", "Copy original RFC822 messages from an Emboxa backup to Gmail, Outlook, Yahoo, iCloud or a custom IMAP mailbox while preserving folders.", "restore email to mailbox, IMAP email transfer, mailbox migration, RFC822 restore"),
     },
     "truenas-email-backup": {
         "it": ("Backup email self-hosted su TrueNAS — Emboxa", "Installa Emboxa con Docker Compose o TrueNAS Community e conserva database, chiavi e archivi sulla tua NAS.", "TrueNAS email backup, self hosted email archive, Docker IMAP backup"),
@@ -765,6 +773,63 @@ def admin_update_user(user_id: int, payload: AdminUserPayload, admin: User = Dep
                       detail=json.dumps(payload.model_dump(), default=str)))
     db.commit()
     return {"ok": True, "over_quota": target.plan != "PLUS" and _storage_used(db, target.id) > target.storage_limit_bytes}
+
+
+@app.delete("/api/admin/users/{user_id}", dependencies=[Depends(csrf_guard)])
+def admin_delete_user(user_id: int, payload: AdminDeleteUserPayload, admin: User = Depends(admin_user), db: Session = Depends(get_db)):
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(404, "User not found")
+    if target.id == admin.id:
+        raise HTTPException(409, "You cannot delete the account used for this administrator session")
+    confirmation = payload.confirmation.strip()
+    if confirmation != "DELETE" and confirmation.lower() != target.email.lower():
+        raise HTTPException(422, "Type DELETE or the user's full email address to confirm")
+
+    accounts = db.scalars(select(Account).where(Account.owner_id == target.id)).all()
+    target.status = "deleting"
+    for account in accounts:
+        account.imap_enabled = False
+        account.next_backup_at = None
+
+    active = False
+    account_ids = [item.id for item in accounts]
+    if account_ids:
+        for job in db.scalars(select(BackupJob).where(BackupJob.account_id.in_(account_ids), BackupJob.status.in_(["queued", "running", "cancelling"]))).all():
+            job.cancel_requested = True
+            if job.status == "queued":
+                job.status, job.finished_at = "cancelled", utcnow()
+            else:
+                job.status, active = "cancelling", True
+    for job in db.scalars(select(IMAPTransferJob).where(IMAPTransferJob.owner_id == target.id, IMAPTransferJob.status.in_(["queued", "running", "cancelling"]))).all():
+        job.cancel_requested = True
+        if job.status == "queued":
+            job.status, job.finished_at, job.encrypted_password, job.quota_period = "cancelled", utcnow(), None, None
+        else:
+            job.status, active = "cancelling", True
+    db.commit()
+    if active:
+        raise HTTPException(409, "Running backup or restore jobs are being cancelled. Retry deletion when cancellation finishes.")
+
+    archive_paths = [ARCHIVES_DIR / item.archive_uuid for item in accounts]
+    export_paths = [safe_resolve(EXPORTS_DIR, item.relpath) for item in db.scalars(select(WebExport).where(WebExport.owner_id == target.id)).all()]
+    db.execute(text("DELETE FROM message_fts WHERE snapshot_id IN (SELECT snapshots.id FROM snapshots JOIN accounts ON accounts.id=snapshots.account_id WHERE accounts.owner_id=:uid)"), {"uid": target.id})
+    for account in accounts:
+        account.active_snapshot_id = None
+    db.flush()
+    db.add(AdminAudit(admin_id=admin.id, action="user_delete", target_type="user", target_id=str(target.id),
+                      detail="User account and all owned archive data permanently deleted"))
+    db.delete(target)
+    db.commit()
+    for path in export_paths:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            log.warning("Could not remove deleted-user export %s", path)
+    for path in archive_paths:
+        shutil.rmtree(path, ignore_errors=True)
+    shutil.rmtree(EXPORTS_DIR / f"user-{user_id}", ignore_errors=True)
+    return {"ok": True}
 
 
 @app.get("/api/admin/settings")
@@ -1097,7 +1162,7 @@ def _telegram_dashboard(db: Session, user: User) -> tuple[str, dict]:
     transfers = db.scalar(select(func.count(IMAPTransferJob.id)).where(
         IMAPTransferJob.owner_id == user.id, IMAPTransferJob.status.in_(["queued", "running", "cancelling"])
     )) or 0
-    text_value = f"EMBOXA · PRIVATE ARCHIVE\n\nPlan  {user.plan}\nStorage  {storage}\nMailboxes  {mailbox_text}\n\nBackup\n{backup}\n\nIMAP transfers active  {transfers}"
+    text_value = f"EMBOXA · PRIVATE EMAIL ARCHIVE\n\nPlan  {user.plan}\nStorage  {storage}\nMailboxes  {mailbox_text}\n\nBackup\n{backup}\n\nMailbox restores active  {transfers}"
     keyboard = {"inline_keyboard": [[{"text": "📬 Mailboxes", "callback_data": "mailboxes"}, {"text": "▶️ Backup", "callback_data": "backup"}],
                                     [{"text": "📊 Activity", "callback_data": "status"}, {"text": "💾 Storage", "callback_data": "storage"}],
                                     [{"text": "🕘 History", "callback_data": "history"}, {"text": "⚙️ Settings", "callback_data": "settings"}],
@@ -1125,7 +1190,7 @@ def _telegram_render(db: Session, user: User, chat_id: str, message_id: str | No
         backups = db.scalars(select(BackupJob).join(Account).where(Account.owner_id == user.id).order_by(BackupJob.id.desc()).limit(4)).all()
         transfers = db.scalars(select(IMAPTransferJob).where(IMAPTransferJob.owner_id == user.id).order_by(IMAPTransferJob.id.desc()).limit(4)).all()
         lines = [f"Backup · {item.account.display_name} · {item.status}" for item in backups]
-        lines += [f"Transfer · {item.destination_label} · {item.status}" for item in transfers]
+        lines += [f"Restore · {item.destination_label} · {item.status}" for item in transfers]
         text_value = "Recent history\n\n" + ("\n".join(lines) or "No completed operations yet")
         keyboard = {"inline_keyboard": [[{"text": "Back", "callback_data": "dashboard"}]]}
     elif view == "settings":
@@ -1408,7 +1473,7 @@ def create_transfer(
     account, snapshot = _active_snapshot(db, account_id, payload.snapshot_id)
     quota = _transfer_quota(db, user)
     if quota["limit"] is not None and quota["remaining"] <= 0:
-        raise HTTPException(409, f"Monthly IMAP transfer limit reached ({quota['limit']}). The quota resets next month.")
+        raise HTTPException(409, f"Monthly mailbox restore limit reached ({quota['limit']}). The quota resets next month.")
     if payload.mode == "single" and not (payload.single_folder or "").strip():
         raise HTTPException(422, "Choose a destination folder")
     source_folders = {item.name for item in db.scalars(select(Folder).where(Folder.snapshot_id == snapshot.id)).all()}

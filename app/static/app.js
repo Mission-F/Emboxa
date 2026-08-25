@@ -69,7 +69,7 @@ function accountCard(account) {
       <div class="card-stats"><div><strong>${account.message_count.toLocaleString('it-IT')}</strong><span>messaggi</span></div><div><strong>${bytes(account.archive_size)}</strong><span>archivio</span></div></div>
       <div class="last-backup"><span class="status-dot ${esc(account.last_backup_status)}"></span><div><strong>${esc(statusLabel(account.last_backup_status))}</strong><small>${date(account.last_backup_at)}${account.next_backup_at ? ` · Prossimo ${date(account.next_backup_at)}` : ''}</small></div></div>
       ${account.last_backup_error ? `<p class="card-error" title="${esc(account.last_backup_error)}">${esc(account.last_backup_error)}</p>` : ''}${progress}
-      <div class="card-actions"><button data-action="backup" data-id="${account.id}" class="primary" ${!account.imap_enabled||job?'disabled':''}>Backup ora</button><button data-action="open" data-id="${account.id}" class="secondary" ${!account.has_archive?'disabled':''}>Apri archivio</button>${account.has_archive?`<button data-action="transfer" data-id="${account.id}" class="secondary">IMAP Transfer</button>`:''}</div>
+      <div class="card-actions"><button data-action="backup" data-id="${account.id}" class="primary" ${!account.imap_enabled||job?'disabled':''}>Backup ora</button><button data-action="open" data-id="${account.id}" class="secondary" ${!account.has_archive?'disabled':''}>Apri archivio</button>${account.has_archive?`<button data-action="transfer" data-id="${account.id}" class="secondary">Restore to mailbox</button>`:''}</div>
     </article>`;
 }
 
@@ -331,7 +331,7 @@ const tourSteps=[
   {selector:'[data-action="open"]',title:'archiveTitle',copy:'archiveCopy'},
   {selector:'[data-action="export"]',title:'exportTitle',copy:'exportCopy'}
 ];
-function localize(){EMBOXA_I18N.apply(preferences.locale);$('#language-select').value=preferences.locale;$('#settings-language').value=preferences.locale;}
+function localize(){EMBOXA_I18N.apply(preferences.locale);$('#language-select').value=preferences.locale;$('#settings-language').value=preferences.locale;EMBOXA_I18N.syncLanguageMenus?.();}
 async function savePreferences(values){preferences=await api('/api/preferences',{method:'PATCH',body:JSON.stringify(values)});localize();}
 function hideTour(){const pop=$('#tour-popover');pop.classList.add('hidden');$$('.tour-target').forEach(el=>el.classList.remove('tour-target'));}
 function showTourStep(){hideTour();while(tourIndex<tourSteps.length&&!$(tourSteps[tourIndex].selector))tourIndex++;if(tourIndex>=tourSteps.length){savePreferences({tutorial_completed:true});return;}const step=tourSteps[tourIndex],target=$(step.selector),pop=$('#tour-popover');target.classList.add('tour-target');$('#tour-title').textContent=EMBOXA_I18N.t(step.title,preferences.locale);$('#tour-copy').textContent=EMBOXA_I18N.t(step.copy,preferences.locale);pop.classList.remove('hidden');const rect=target.getBoundingClientRect();pop.style.left=`${Math.max(12,Math.min(innerWidth-pop.offsetWidth-12,rect.left))}px`;pop.style.top=`${Math.min(innerHeight-pop.offsetHeight-12,rect.bottom+10)}px`;}
