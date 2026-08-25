@@ -4,6 +4,9 @@ services:
     container_name: emboxa-web
     restart: unless-stopped
     init: true
+    # TrueNAS host-path datasets are commonly not writable by container UID 1000.
+    # Running this single-purpose container as root keeps first start predictable.
+    user: "0:0"
     environment:
       DATA_DIR: /data
       DATABASE_URL: sqlite:////data/db/mailvault.db
@@ -12,8 +15,12 @@ services:
       COOKIE_SECURE: "false"
       PUBLIC_APP_URL: http://NAS_IP:49273
       TZ: Europe/Rome
+      FORWARDED_ALLOW_IPS: "127.0.0.1"
+      # Set these for the first start, then remove ADMIN_PASSWORD after login.
+      ADMIN_EMAIL: admin@example.com
+      ADMIN_PASSWORD: REPLACE_WITH_A_LONG_PASSWORD
     ports:
-      - "49173:8000"
+      - "49273:8000"
     volumes:
       - /mnt/REPLACE_WITH_POOL/app_locali/Emboxa-Web/data:/data
     healthcheck:

@@ -1,5 +1,5 @@
 const csrf = document.querySelector('meta[name="csrf-token"]').content;
-const state = {accounts: [], account: null, folders: [], versions: [], snapshotId: null, folderId: null, trash: false, deletedCount: 0, archiveView: 'messages', page: 1, pageSize: 50, total: 0, filters: {}, polling: null, attachments: {page:1,pageSize:60,total:0,mode:'grid',category:'all',q:''}};
+const state = {accounts: [], account: null, folders: [], versions: [], snapshotId: null, folderId: null, trash: false, deletedCount: 0, archiveView: 'messages', page: 1, pageSize: 50, total: 0, filters: {}, polling: null, openAccountMenuId: null, attachments: {page:1,pageSize:60,total:0,mode:'grid',category:'all',q:''}};
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const esc = (value = '') => String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
@@ -60,22 +60,56 @@ async function loadAccounts(quiet = false) {
   } catch (error) { if (!quiet) toast(error.message, 'error'); }
 }
 
-function renderAccounts() {
-  const grid = $('#account-grid');
-  $('#empty-state').classList.toggle('hidden', state.accounts.length !== 0);
-  grid.innerHTML = state.accounts.map(account => {
-    const job = account.job;
-    const progress = job ? `<div class="job"><div><span>${esc(job.current_folder || statusLabel(job.status))}</span><strong>${job.status==='queued'?'In coda':`${job.percent}%`}</strong></div><div class="progress"><i style="width:${job.percent}%"></i></div><small>${job.processed_messages.toLocaleString('it-IT')} / ${job.total_messages ? job.total_messages.toLocaleString('it-IT') : '?'} messaggi · ${job.attachment_count.toLocaleString('it-IT')} allegati${job.status==='running'?` · ${job.throughput.toFixed(1)} msg/s · ETA ${duration(job.eta_seconds)}`:''}</small><button data-action="cancel" data-id="${job.id}" class="text-button danger-text">Interrompi</button></div>` : '';
-    return `<article class="account-card">
+function accountCard(account) {
+  const job = account.job;
+  const progress = job ? `<div class="job"><div><span>${esc(job.current_folder || statusLabel(job.status))}</span><strong>${job.status==='queued'?'In coda':`${job.percent}%`}</strong></div><div class="progress"><i style="width:${job.percent}%"></i></div><small>${job.processed_messages.toLocaleString('it-IT')} / ${job.total_messages ? job.total_messages.toLocaleString('it-IT') : '?'} messaggi · ${job.attachment_count.toLocaleString('it-IT')} allegati${job.status==='running'?` · ${job.throughput.toFixed(1)} msg/s · ETA ${duration(job.eta_seconds)}`:''}</small><button data-action="cancel" data-id="${job.id}" class="text-button danger-text">Interrompi</button></div>` : '';
+  return `<article class="account-card" data-account-card="${account.id}">
       <div class="card-top"><div class="account-avatar">${esc(account.display_name.charAt(0).toUpperCase())}</div><div class="account-title"><h2>${esc(account.display_name)}</h2><p>${esc(account.email)}</p></div>
-      <details class="menu"><summary aria-label="Azioni account">${icon('dots')}</summary><div><button data-action="edit" data-id="${account.id}">Modifica IMAP</button>${account.imap_enabled?`<button data-action="test-saved" data-id="${account.id}">Test connessione</button>`:''}${!account.is_permanent?`<button data-action="permanent" data-id="${account.id}">Make permanent</button>`:'<span class="permanent-label">Permanent</span>'}${account.has_archive?`<button data-action="export" data-id="${account.id}">Esporta archivio</button><button data-action="clear" data-id="${account.id}" class="danger-text">Cancella archivio</button>`:''}<button data-action="delete" data-id="${account.id}" class="danger-text">Elimina account</button></div></details></div>
+      <details class="menu" data-account-menu="${account.id}" ${state.openAccountMenuId===account.id?'open':''}><summary aria-label="Azioni account ${esc(account.display_name)}" aria-haspopup="menu" aria-expanded="${state.openAccountMenuId===account.id?'true':'false'}">${icon('dots')}</summary><div role="menu"><button role="menuitem" data-action="edit" data-id="${account.id}">Modifica IMAP</button>${account.imap_enabled?`<button role="menuitem" data-action="test-saved" data-id="${account.id}">Test connessione</button>`:''}${!account.is_permanent?`<button role="menuitem" data-action="permanent" data-id="${account.id}">Make permanent</button>`:'<span class="permanent-label">Permanent</span>'}${account.has_archive?`<button role="menuitem" data-action="export" data-id="${account.id}">Esporta archivio</button><button role="menuitem" data-action="clear" data-id="${account.id}" class="danger-text">Cancella archivio</button>`:''}<button role="menuitem" data-action="delete" data-id="${account.id}" class="danger-text">Elimina account</button></div></details></div>
       <div class="card-stats"><div><strong>${account.message_count.toLocaleString('it-IT')}</strong><span>messaggi</span></div><div><strong>${bytes(account.archive_size)}</strong><span>archivio</span></div></div>
       <div class="last-backup"><span class="status-dot ${esc(account.last_backup_status)}"></span><div><strong>${esc(statusLabel(account.last_backup_status))}</strong><small>${date(account.last_backup_at)}${account.next_backup_at ? ` · Prossimo ${date(account.next_backup_at)}` : ''}</small></div></div>
       ${account.last_backup_error ? `<p class="card-error" title="${esc(account.last_backup_error)}">${esc(account.last_backup_error)}</p>` : ''}${progress}
       <div class="card-actions"><button data-action="backup" data-id="${account.id}" class="primary" ${!account.imap_enabled||job?'disabled':''}>Backup ora</button><button data-action="open" data-id="${account.id}" class="secondary" ${!account.has_archive?'disabled':''}>Apri archivio</button></div>
     </article>`;
-  }).join('');
 }
+
+function renderAccounts() {
+  const grid = $('#account-grid');
+  $('#empty-state').classList.toggle('hidden', state.accounts.length !== 0);
+  const liveIds = new Set(state.accounts.map(account => String(account.id)));
+  for (const oldCard of $$('[data-account-card]', grid)) if (!liveIds.has(oldCard.dataset.accountCard)) oldCard.remove();
+  state.accounts.forEach((account, index) => {
+    const current = grid.querySelector(`[data-account-card="${account.id}"]`);
+    if (current && state.openAccountMenuId === account.id) return;
+    const template = document.createElement('template'); template.innerHTML = accountCard(account).trim();
+    const next = template.content.firstElementChild;
+    if (current) current.replaceWith(next);
+    else grid.append(next);
+    const positioned = grid.children[index];
+    if (positioned !== next) grid.insertBefore(next, positioned || null);
+  });
+}
+
+function closeAccountMenus({restoreFocus = false} = {}) {
+  const open = $('.menu[open]');
+  state.openAccountMenuId = null;
+  if (open) {
+    open.open = false;
+    open.querySelector('summary')?.setAttribute('aria-expanded', 'false');
+    if (restoreFocus) open.querySelector('summary')?.focus();
+  }
+}
+
+$('#account-grid').addEventListener('toggle', event => {
+  const menu = event.target.closest('[data-account-menu]'); if (!menu) return;
+  const id = Number(menu.dataset.accountMenu); const summary = menu.querySelector('summary');
+  summary?.setAttribute('aria-expanded', String(menu.open));
+  if (!menu.open) { if (state.openAccountMenuId === id) state.openAccountMenuId = null; return; }
+  for (const other of $$('.menu[open]', $('#account-grid'))) if (other !== menu) other.open = false;
+  state.openAccountMenuId = id;
+}, true);
+
+document.addEventListener('keydown', event => { if (event.key === 'Escape' && state.openAccountMenuId !== null) { event.preventDefault(); closeAccountMenus({restoreFocus:true}); } });
 
 function accountPayload(form) {
   const data = Object.fromEntries(new FormData(form));
@@ -105,9 +139,11 @@ async function confirmAction(title, message) {
 }
 
 document.addEventListener('click', async event => {
+  if (!event.target.closest('.menu') && state.openAccountMenuId !== null) closeAccountMenus();
   const close = event.target.closest('[data-close]'); if (close) return $(`#${close.dataset.close}`).close();
   const add = event.target.closest('[data-action="add"],#add-account'); if (add) return openAccountDialog();
   const button = event.target.closest('[data-action]'); if (!button) return;
+  if (button.closest('.menu')) closeAccountMenus();
   const id = Number(button.dataset.id); const account = state.accounts.find(item => item.id === id);
   try {
     if (button.dataset.action === 'edit') openAccountDialog(account);

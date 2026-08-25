@@ -9,7 +9,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SELF = ROOT.parent / "mailbackup"
-FILES = ("app/mail_parser.py", "app/imap_adapter.py", "app/static/i18n.js", "app/static/shared-tokens.css")
+# The Web catalogue contains auth, administration and public-service strings that
+# do not exist in the appliance catalogue, so it is intentionally maintained here.
+FILES = ("app/mail_parser.py", "app/imap_adapter.py", "app/static/shared-tokens.css")
 
 
 def digest(path: Path) -> str:

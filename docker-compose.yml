@@ -1,9 +1,6 @@
 services:
   emboxa-web:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: emboxa-web:local
+    image: ghcr.io/mission-f/emboxa-web:latest
     container_name: emboxa-web
     restart: unless-stopped
     init: true
@@ -13,13 +10,14 @@ services:
       SESSION_SECRET_FILE: ${SESSION_SECRET_FILE:-/data/secrets/session.key}
       ENCRYPTION_KEY_FILE: ${ENCRYPTION_KEY_FILE:-/data/secrets/fernet.key}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
-      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-https://emboxa.eu}
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:49273}
       APP_SECRET: ${APP_SECRET:-}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       TZ: ${TZ:-Europe/Rome}
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
     ports:
       - "${WEB_PORT:-49273}:8000"
     volumes:
@@ -39,3 +37,4 @@ services:
 
 volumes:
   emboxa_web_data:
+    name: emboxa_web_data

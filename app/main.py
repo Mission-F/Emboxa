@@ -447,6 +447,7 @@ def localized_public(request: Request, page: str = "home"):
         "locale": locale, "page": page, "canonical": canonical, "public_url": public_url,
         "app_name": get_setting("public_app_name"), "analytics_id": analytics_id, "from_email": _contact_email(),
         "github_url": GITHUB_REPOSITORY_URL,
+        "logged_in": bool(request.session.get("user_id")),
         "retention_days": get_int_setting("standard_retention_days", STANDARD_RETENTION_DAYS),
         "storage_limit_gb": round(get_int_setting("standard_storage_limit_bytes", STANDARD_STORAGE_LIMIT_BYTES) / 1024**3),
         "mailbox_limit": get_int_setting("standard_mailbox_limit", STANDARD_MAILBOX_LIMIT),
