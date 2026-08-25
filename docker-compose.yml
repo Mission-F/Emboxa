@@ -1,0 +1,41 @@
+services:
+  emboxa-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: emboxa-web:local
+    container_name: emboxa-web
+    restart: unless-stopped
+    init: true
+    environment:
+      DATA_DIR: ${DATA_DIR:-/data}
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////data/db/mailvault.db}
+      SESSION_SECRET_FILE: ${SESSION_SECRET_FILE:-/data/secrets/session.key}
+      ENCRYPTION_KEY_FILE: ${ENCRYPTION_KEY_FILE:-/data/secrets/fernet.key}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-https://emboxa.eu}
+      APP_SECRET: ${APP_SECRET:-}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      TZ: ${TZ:-Europe/Rome}
+    ports:
+      - "${WEB_PORT:-49273}:8000"
+    volumes:
+      - emboxa_web_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 60s
+    stop_grace_period: 45s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  emboxa_web_data:

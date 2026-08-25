@@ -1,0 +1,8 @@
+:root {
+  --emboxa-navy: #14213d;
+  --emboxa-orange: #fca311;
+  --emboxa-radius-control: 8px;
+  --emboxa-radius-card: 12px;
+  --accent: var(--emboxa-orange);
+  --heading-brand: var(--emboxa-navy);
+}

@@ -1,0 +1,17 @@
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+data/
+exports/
+*.db
+*.sqlite*
+*.eml
+*.mailvault
+*.key
+logs/
+.DS_Store
+
+# TrueNAS deployment used on this specific host. Publish the example instead.
+/deploy/truenas-web.yaml

@@ -1,0 +1,25 @@
+services:
+  emboxa-web:
+    image: ghcr.io/mission-f/emboxa-web:latest
+    container_name: emboxa-web
+    restart: unless-stopped
+    init: true
+    environment:
+      DATA_DIR: /data
+      DATABASE_URL: sqlite:////data/db/mailvault.db
+      SESSION_SECRET_FILE: /data/secrets/session.key
+      ENCRYPTION_KEY_FILE: /data/secrets/fernet.key
+      COOKIE_SECURE: "false"
+      PUBLIC_APP_URL: http://NAS_IP:49273
+      TZ: Europe/Rome
+    ports:
+      - "49173:8000"
+    volumes:
+      - /mnt/REPLACE_WITH_POOL/app_locali/Emboxa-Web/data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 30s
+    stop_grace_period: 45s

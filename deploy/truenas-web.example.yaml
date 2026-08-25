@@ -1,0 +1,31 @@
+services:
+  emboxa-web:
+    build:
+      context: /mnt/POOL/apps/Emboxa-Web
+      dockerfile: Dockerfile
+    image: emboxa-web:local
+    container_name: emboxa-web
+    restart: unless-stopped
+    init: true
+    environment:
+      DATA_DIR: /data
+      DATABASE_URL: sqlite:////data/db/emboxa-web.db
+      SESSION_SECRET_FILE: /data/secrets/session.key
+      ENCRYPTION_KEY_FILE: /data/secrets/fernet.key
+      PUBLIC_APP_URL: https://example.com
+      COOKIE_SECURE: "true"
+      FORWARDED_ALLOW_IPS: "*"
+      ADMIN_EMAIL: ""
+      ADMIN_PASSWORD: ""
+      TZ: Europe/Rome
+    ports:
+      - "49273:8000"
+    volumes:
+      - /mnt/POOL/apps/Emboxa-Web/data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 90s
+    stop_grace_period: 60s

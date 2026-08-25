@@ -1,0 +1,14 @@
+.git
+.github
+.venv
+.pytest_cache
+tests
+docs
+*.db
+*.mailvault
+.env
+.venv
+__pycache__
+.pytest_cache
+data
+tests

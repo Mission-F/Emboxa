@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <meta name="robots" content="noindex,nofollow"><meta name="web-plan" content="{{ web_user.plan }}">
+  <meta name="theme-color" content="#0B1F3A"><meta name="application-name" content="EMBOXA"><meta name="apple-mobile-web-app-title" content="EMBOXA">
+  <title>EMBOXA · Archivio email privato</title>
+  <link rel="icon" href="/static/icons/favicon-64.png" type="image/png"><link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png"><link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/shared-tokens.css">
+</head>
+<body>
+  <header class="topbar">
+    <button id="mobile-folders" class="icon-button mobile-only" type="button" aria-label="Apri navigazione">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+    </button>
+    <button id="home-button" class="brand" type="button" aria-label="Vai alla dashboard">
+      <img class="brand-logo" src="/static/icons/emboxa-192.png" alt="">
+      <span class="wordmark">EMBOXA</span>
+    </button>
+    <div id="search-wrap" class="search hidden" role="search">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+      <input id="search-input" type="search" placeholder="Cerca email" aria-label="Cerca email" autocomplete="off">
+      <button id="filters-button" class="filter-trigger" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg><span>Filtri</span></button>
+    </div>
+    <div class="top-actions">
+      <button id="backup-activity-button" class="activity-button hidden" type="button" aria-haspopup="dialog"><span class="pulse-dot"></span><span id="activity-summary">Backup activity</span></button>
+      <label class="language-control" title="Language"><select id="language-select" aria-label="Language"><option value="auto">Auto</option><option value="it">Italiano</option><option value="en">English</option></select></label>
+      <label class="theme-control" title="Tema">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3a9 9 0 1 0 9 9c0-.5 0-1-.1-1.5A7 7 0 0 1 13.5 3H12Z"/></svg>
+        <select id="theme-select" aria-label="Tema"><option value="system">Sistema</option><option value="light">Chiaro</option><option value="dark">Scuro</option></select>
+      </label>
+      <button id="logout-button" class="icon-button" type="button" aria-label="Esci" title="Esci"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 17l5-5-5-5M15 12H3M14 4h5a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-5"/></svg></button>
+    </div>
+  </header>
+
+  <div id="dashboard" class="dashboard-shell">
+    <aside class="main-sidebar" aria-label="Navigazione principale">
+      <button id="sidebar-collapse" class="sidebar-collapse" type="button" aria-label="Comprimi menu" title="Comprimi menu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></button>
+      <nav>
+        <button class="nav-item active" type="button" data-nav="dashboard"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg><span>Dashboard</span></button>
+        <button id="nav-accounts" class="nav-item" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5 12 13l8-5.5M5 6h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z"/></svg><span>Account</span></button>
+        <button id="nav-archives" class="nav-item" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16v13H4zM3 3h18v4H3zM9 11h6"/></svg><span>Archivi</span></button>
+        <button id="import-button" class="nav-item" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></svg><span>Importa archivio</span></button>
+        <button id="nav-settings" class="nav-item" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg><span>Preferenze</span></button>
+        {% if web_user.role == 'admin' %}<a class="nav-item" href="/admin"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4.5 6v5.5c0 4.4 3 7.6 7.5 9.5 4.5-1.9 7.5-5.1 7.5-9.5V6L12 3Z"/><path d="M9.5 12 11 13.5l3.5-4"/></svg><span>Administration</span></a>{% endif %}
+      </nav>
+    </aside>
+
+    <main class="dashboard page">
+      <section class="page-heading">
+        <div><p class="eyebrow">PANORAMICA</p><h1>I tuoi archivi</h1><p class="muted">Stato e backup delle tue caselle email.</p></div>
+        <button id="add-account" class="primary" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Aggiungi account</button>
+        <input id="import-input" type="file" accept=".mailvault" hidden>
+      </section>
+      <section id="web-usage" class="web-usage" aria-live="polite"></section>
+      <section id="account-grid" class="account-grid" aria-live="polite"></section>
+      <section id="empty-state" class="empty-state hidden">
+        <div class="empty-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5 12 13l8-5.5M5 6h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z"/></svg></div>
+        <h2>Nessun account email</h2><p>Aggiungi la prima casella per creare un archivio privato.</p><button class="primary" type="button" data-action="add">Aggiungi account</button>
+      </section>
+    </main>
+  </div>
+
+  <main id="archive" class="archive-layout hidden">
+    <aside id="folder-sidebar" class="folder-sidebar">
+      <div class="archive-account">
+        <button id="archive-back" class="back-button" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>Dashboard</button>
+        <div class="archive-identity"><span id="archive-avatar" class="account-avatar"></span><div><h2 id="archive-name"></h2><p id="archive-email" class="muted"></p></div></div>
+      </div>
+      <div class="version-picker"><label for="version-select">Versione backup</label><select id="version-select"></select><button id="versions-button" class="text-button" type="button">Dettagli versioni</button></div>
+      <div id="protection-warning" class="protection-warning hidden"></div>
+      <div class="archive-view-tabs" role="tablist"><button id="messages-view-button" class="active" type="button" role="tab">Email</button><button id="attachments-view-button" type="button" role="tab">Attachments</button></div>
+      <nav id="folder-list" class="folder-list" aria-label="Cartelle email"></nav><div id="archive-stats" class="archive-stats"></div>
+    </aside>
+    <section class="message-column">
+      <div class="list-toolbar"><div><strong id="list-title">Tutti i messaggi</strong><span id="result-count" class="muted"></span></div></div>
+      <div id="message-list" class="message-list" aria-live="polite"></div>
+      <div class="pagination">
+        <button id="prev-page" class="icon-button bordered" type="button" aria-label="Pagina precedente"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></button><span id="page-label"></span>
+        <button id="next-page" class="icon-button bordered" type="button" aria-label="Pagina successiva"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
+      </div>
+    </section>
+    <article id="reader" class="reader">
+      <div class="reader-empty"><span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7.5 12 13l8-5.5M5 6h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z"/></svg></span><p>Seleziona un messaggio per leggerlo</p></div>
+    </article>
+    <section id="attachments-view" class="attachments-view hidden">
+      <header class="attachments-toolbar"><div><p class="eyebrow">ARCHIVED FILES</p><h2>Attachments</h2><span id="attachments-count" class="muted"></span></div><div class="attachments-actions"><input id="attachment-search" type="search" placeholder="Cerca filename…" aria-label="Cerca allegati"><select id="attachment-filter" aria-label="Tipo allegato"><option value="all">All</option><option value="images">Images</option><option value="pdf">PDF</option><option value="documents">Documents</option><option value="spreadsheets">Spreadsheets</option><option value="presentations">Presentations</option><option value="archives">Archives</option><option value="other">Other</option></select><div class="view-mode"><button id="attachments-grid-button" class="active" type="button">Grid</button><button id="attachments-list-button" type="button">List</button></div></div></header>
+      <div id="attachments-results" class="attachments-results grid" aria-live="polite"></div>
+      <div class="attachments-pagination"><button id="attachments-prev" class="secondary" type="button">←</button><span id="attachments-page"></span><button id="attachments-next" class="secondary" type="button">→</button></div>
+    </section>
+  </main>
+
+  <dialog id="account-dialog" class="dialog account-dialog">
+    <form id="account-form" method="dialog">
+      <div class="dialog-heading"><div><p class="eyebrow">CONFIGURAZIONE IMAP</p><h2 id="account-dialog-title">Aggiungi account</h2></div><button type="button" class="icon-button" data-close="account-dialog" aria-label="Chiudi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+      <input name="account_id" type="hidden">
+      <div class="form-section"><span class="step-number">1</span><div><h3>Identità</h3><p>Come riconoscere questa casella nell’archivio.</p></div></div>
+      <div class="form-grid"><label>Nome visualizzato<input name="display_name" maxlength="200" required></label><label>Indirizzo email<input name="email" type="email" required></label></div>
+      <div class="form-section"><span class="step-number">2</span><div><h3>Accesso IMAP</h3><p>Usa una app password quando richiesta dal provider.</p></div></div>
+      <div class="form-grid">
+        <label>Provider<select id="provider-preset"><option value="">Personalizzato</option><option value="gmail">Gmail</option><option value="outlook">Outlook / Microsoft 365</option><option value="icloud">iCloud Mail</option><option value="yahoo">Yahoo Mail</option></select></label>
+        <label>Server IMAP<input name="imap_host" maxlength="255" required></label>
+        <label>Porta<input name="imap_port" type="number" min="1" max="65535" value="993" required></label>
+        <label>Sicurezza<select name="security"><option value="ssl">SSL/TLS</option><option value="starttls">STARTTLS</option><option value="plain">Nessuna (sconsigliata)</option></select></label>
+        <label class="span-2">Username<input name="imap_username" maxlength="320" required></label>
+        <label class="span-2">Password / app password<input name="password" type="password" maxlength="1024" autocomplete="new-password"><small id="password-hint">Obbligatoria per un nuovo account.</small></label>
+      </div>
+      <details class="advanced-settings">
+        <summary><span>Impostazioni avanzate</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></summary>
+        <div class="form-grid">
+          <label class="span-2">Cartella radice <span class="optional">opzionale</span><input name="root_folder" maxlength="500" placeholder="Vuoto per includere tutte le cartelle"></label>
+          <label>Backup automatico<select name="schedule_mode"><option value="disabled">Disattivato</option><option value="daily">Ogni giorno</option><option value="weekly">Ogni settimana</option><option value="interval">Intervallo</option></select></label>
+          <label id="interval-label" class="hidden">Ogni quante ore<input name="schedule_interval_hours" type="number" min="1" max="8760" value="24"></label>
+          <label>Versioni da conservare<select name="retention_versions"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option><option>10</option></select></label>
+        </div>
+      </details>
+      <p id="account-form-status" class="form-status" role="status"></p>
+      <div class="dialog-actions"><button id="test-connection" type="button" class="secondary">Test connessione</button><span class="grow"></span><button type="button" class="ghost" data-close="account-dialog">Annulla</button><button type="submit" class="primary">Salva account</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="filters-dialog" class="dialog filters-dialog">
+    <form id="filters-form" method="dialog">
+      <div class="dialog-heading"><div><p class="eyebrow">RICERCA</p><h2>Filtri avanzati</h2></div><button type="button" class="icon-button" data-close="filters-dialog" aria-label="Chiudi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+      <div class="form-grid">
+        <label>Mittente<input name="sender"></label><label>Destinatario<input name="recipient"></label><label class="span-2">Oggetto<input name="subject"></label>
+        <label>Dal<input name="date_from" type="date"></label><label>Al<input name="date_to" type="date"></label>
+        <label>Allegati<select name="has_attachments"><option value="">Qualsiasi</option><option value="true">Presenti</option><option value="false">Assenti</option></select></label>
+        <label>Stato<select name="is_read"><option value="">Qualsiasi</option><option value="false">Non letta</option><option value="true">Letta</option></select></label>
+        <label>Contrassegno<select name="is_starred"><option value="">Qualsiasi</option><option value="true">Contrassegnata</option><option value="false">Non contrassegnata</option></select></label>
+        <label>Ordina<select name="sort"><option value="date_desc">Più recenti</option><option value="date_asc">Meno recenti</option><option value="sender">Mittente</option><option value="subject">Oggetto</option></select></label>
+      </div>
+      <div class="dialog-actions"><button id="clear-filters" type="button" class="ghost">Azzera filtri</button><span class="grow"></span><button type="submit" class="primary">Applica filtri</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="confirm-dialog" class="dialog confirm-dialog">
+    <form method="dialog"><div class="danger-symbol"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8v5m0 3h.01M10.3 4.4 2.6 18a2 2 0 0 0 1.7 3h15.4a2 2 0 0 0 1.7-3L13.7 4.4a2 2 0 0 0-3.4 0Z"/></svg></div><h2 id="confirm-title">Conferma</h2><p id="confirm-text"></p><div class="dialog-actions"><span class="grow"></span><button value="cancel" class="ghost">Annulla</button><button id="confirm-ok" value="ok" class="danger">Conferma</button></div></form>
+  </dialog>
+  <dialog id="activity-dialog" class="dialog activity-dialog"><div class="panel-heading"><div><p class="eyebrow">CODA IN BACKGROUND</p><h2>Backup Activity</h2></div><button class="icon-button" type="button" data-close="activity-dialog" aria-label="Chiudi"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div id="activity-content" class="activity-content"></div></dialog>
+  <dialog id="versions-dialog" class="dialog versions-dialog"><div class="panel-heading"><div><p class="eyebrow">SNAPSHOT IMMUTABILI</p><h2>Versioni backup</h2></div><button class="icon-button" type="button" data-close="versions-dialog" aria-label="Chiudi"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div id="versions-content" class="versions-content"></div></dialog>
+  <dialog id="attachment-viewer" class="dialog attachment-viewer"><div class="panel-heading"><div><p class="eyebrow">SAFE PREVIEW</p><h2 id="viewer-filename">Allegato</h2><p id="viewer-meta" class="muted"></p></div><button class="icon-button" type="button" data-close="attachment-viewer" aria-label="Chiudi"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div id="viewer-content" class="viewer-content"></div><footer class="viewer-actions"><button id="viewer-show-email" class="secondary" type="button">Show email</button><a id="viewer-download" class="primary" href="#" download>Download</a></footer></dialog>
+  <dialog id="welcome-dialog" class="dialog welcome-dialog"><div class="welcome-mark"><img src="/static/icons/emboxa-192.png" alt="EMBOXA"></div><p class="eyebrow">EMBOXA</p><h2 data-i18n="welcomeTitle">Welcome to EMBOXA</h2><p class="welcome-tagline" data-i18n="welcomeTagline">Your email. Your archive.</p><ol><li data-i18n="welcomeStep1">Add an email account</li><li data-i18n="welcomeStep2">Start your first backup</li><li data-i18n="welcomeStep3">Browse or export your archive</li></ol><div class="dialog-actions"><button id="welcome-skip" class="ghost" type="button" data-i18n="skip">Skip</button><button id="welcome-start" class="primary" type="button" data-i18n="getStarted">Get started</button></div></dialog>
+  <div id="tour-popover" class="tour-popover hidden" role="dialog" aria-live="polite"><b id="tour-title"></b><p id="tour-copy"></p><div><button id="tour-never" class="ghost" type="button" data-i18n="dontShow">Don't show again</button><button id="tour-skip" class="ghost" type="button" data-i18n="skip">Skip</button><button id="tour-next" class="primary" type="button" data-i18n="next">Next</button></div></div>
+  <dialog id="settings-dialog" class="dialog settings-dialog"><div class="panel-heading"><div><p class="eyebrow">EMBOXA</p><h2 data-i18n="settings">Preferences</h2></div><button class="icon-button" type="button" data-close="settings-dialog" aria-label="Close"><svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div><div class="settings-body"><label><span data-i18n="language">Language</span><select id="settings-language"><option value="auto">Auto</option><option value="it">Italiano</option><option value="en">English</option></select></label><button id="restart-tutorial" class="secondary" type="button" data-i18n="restartTutorial">Restart tutorial</button><hr><h3>Telegram</h3><p id="telegram-user-status" class="muted">The administrator configures the bot once. To receive your notifications, open the bot on Telegram, send <b>/start</b>, then paste the Chat ID shown by the bot here.</p><p><a id="telegram-open-bot" class="secondary hidden" href="#" target="_blank" rel="noopener">Open Telegram bot</a></p><label>Your Telegram Chat ID<input id="telegram-chat-id" inputmode="numeric" placeholder="123456789"></label><div class="settings-row"><button id="telegram-connect" class="secondary" type="button">Link my Chat ID</button><button id="telegram-test" class="secondary" type="button">Send test dashboard</button><button id="telegram-disconnect" class="ghost" type="button">Disconnect</button></div><p class="muted">Need more storage? Contact the administrator at {{ admin_email or 'the configured support address' }}.</p></div></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div><script src="/static/i18n.js"></script><script src="/static/app.js" defer></script><script src="/static/web-app.js" defer></script>
+</body>
+</html>
