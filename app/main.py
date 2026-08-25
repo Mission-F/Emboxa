@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import hashlib
 from html import escape
@@ -15,7 +16,7 @@ from datetime import datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Annotated, Literal
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from urllib.request import Request as URLRequest, urlopen
 
 import bleach
@@ -30,6 +31,21 @@ from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
+from webauthn import (
+    base64url_to_bytes,
+    generate_authentication_options,
+    generate_registration_options,
+    options_to_json,
+    verify_authentication_response,
+    verify_registration_response,
+)
+from webauthn.helpers.structs import (
+    AttestationConveyancePreference,
+    AuthenticatorSelectionCriteria,
+    PublicKeyCredentialDescriptor,
+    ResidentKeyRequirement,
+    UserVerificationRequirement,
+)
 
 from .archive import ArchiveError, build_export, clear_account_archive, delete_account, import_archive
 from .backup import backup_manager, next_backup_time, recover_interrupted_jobs, rotate_versions, snapshot_root
@@ -48,7 +64,7 @@ from .imap_transfer import recover_interrupted_transfers, transfer_manager
 from .migrations import run_migrations
 from .models import (
     Account, AdminAudit, AppSetting, ArchiveDeletionAudit, Attachment, BackupJob, Folder, IMAPTransferJob, Message,
-    PermanentMailboxHistory, SecurityToken, Snapshot, TelegramLink, User, WebExport, utcnow,
+    PasskeyCredential, PermanentMailboxHistory, SecurityToken, Snapshot, TelegramLink, User, WebExport, utcnow,
 )
 from .scheduler import scheduler
 from .settings_service import get_bool_setting, get_float_setting, get_int_setting, get_setting, save_setting
@@ -212,6 +228,28 @@ def _client_key(request: Request, username: str) -> str:
     return f"{host}:{username.lower()}"
 
 
+def _b64url(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
+
+
+def _webauthn_origin_and_rp_id(request: Request, db: Session | None = None) -> tuple[str, str]:
+    request_origin = f"{request.url.scheme}://{request.url.netloc}"
+    request_host = request.url.hostname or urlparse(request_origin).hostname or "localhost"
+    if request_host in {"localhost", "127.0.0.1", "::1"}:
+        return request_origin, request_host
+    configured = get_setting("public_domain", PUBLIC_APP_URL, db).rstrip("/")
+    parsed = urlparse(configured if "://" in configured else f"https://{configured}")
+    if parsed.scheme and parsed.netloc and parsed.hostname:
+        return f"{parsed.scheme}://{parsed.netloc}", parsed.hostname
+    return request_origin, request_host
+
+
+def _login_user_session(request: Request, user: User) -> None:
+    request.session.clear()
+    request.session["user_id"] = user.id
+    request.session["csrf"] = make_csrf_token()
+
+
 def _running_job(db: Session, account_id: int) -> BackupJob | None:
     return db.scalar(select(BackupJob).where(
         BackupJob.account_id == account_id,
@@ -258,6 +296,19 @@ class ResetRequestPayload(BaseModel):
 class ResetConfirmPayload(BaseModel):
     token: str = Field(min_length=32, max_length=200)
     password: str = Field(min_length=10, max_length=256)
+
+
+class PasskeyRegisterVerifyPayload(BaseModel):
+    credential: dict
+    name: str = Field(default="Passkey", max_length=200)
+
+
+class PasskeyAuthenticationOptionsPayload(BaseModel):
+    email: EmailStr | None = None
+
+
+class PasskeyAuthenticationVerifyPayload(BaseModel):
+    credential: dict
 
 
 class PreferencesPayload(BaseModel):
@@ -612,7 +663,7 @@ def verify_email(payload: VerifyPayload, request: Request, db: Session = Depends
         raise HTTPException(400, "Invalid or expired code")
     token.used_at = utcnow(); user.verified_at = utcnow(); user.last_login_at = utcnow()
     db.commit()
-    request.session.clear(); request.session["user_id"] = user.id; request.session["csrf"] = make_csrf_token()
+    _login_user_session(request, user)
     return {"ok": True, "next": "/app"}
 
 
@@ -651,9 +702,163 @@ def login(payload: LoginPayload, request: Request, db: Session = Depends(get_db)
     user.last_login_at = utcnow()
     db.commit()
     clear_login_failures(key)
-    request.session.clear()
-    request.session["user_id"] = user.id
-    request.session["csrf"] = make_csrf_token()
+    _login_user_session(request, user)
+    return {"ok": True}
+
+
+@app.get("/api/passkeys")
+def list_passkeys(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    credentials = db.scalars(
+        select(PasskeyCredential)
+        .where(PasskeyCredential.user_id == user.id)
+        .order_by(PasskeyCredential.created_at.desc())
+    ).all()
+    return [{
+        "id": item.id,
+        "name": item.name,
+        "transports": json.loads(item.transports_json or "[]"),
+        "device_type": item.device_type,
+        "backed_up": item.backed_up,
+        "created_at": item.created_at,
+        "last_used_at": item.last_used_at,
+    } for item in credentials]
+
+
+@app.post("/api/passkeys/register/options", dependencies=[Depends(csrf_guard)])
+def passkey_registration_options(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    origin, rp_id = _webauthn_origin_and_rp_id(request, db)
+    existing = db.scalars(select(PasskeyCredential).where(PasskeyCredential.user_id == user.id)).all()
+    options = generate_registration_options(
+        rp_id=rp_id,
+        rp_name=get_setting("public_app_name", "Emboxa Web", db),
+        user_id=str(user.id).encode(),
+        user_name=user.email,
+        user_display_name=user.email,
+        attestation=AttestationConveyancePreference.NONE,
+        authenticator_selection=AuthenticatorSelectionCriteria(
+            resident_key=ResidentKeyRequirement.REQUIRED,
+            user_verification=UserVerificationRequirement.REQUIRED,
+        ),
+        exclude_credentials=[
+            PublicKeyCredentialDescriptor(id=base64url_to_bytes(item.credential_id))
+            for item in existing
+        ],
+    )
+    request.session["passkey_registration_challenge"] = _b64url(options.challenge)
+    request.session["passkey_registration_origin"] = origin
+    request.session["passkey_registration_rp_id"] = rp_id
+    return JSONResponse(json.loads(options_to_json(options)))
+
+
+@app.post("/api/passkeys/register/verify", dependencies=[Depends(csrf_guard)])
+def verify_passkey_registration(payload: PasskeyRegisterVerifyPayload, request: Request,
+                                user: User = Depends(current_user), db: Session = Depends(get_db)):
+    challenge = request.session.get("passkey_registration_challenge")
+    origin = request.session.get("passkey_registration_origin")
+    rp_id = request.session.get("passkey_registration_rp_id")
+    if not challenge or not origin or not rp_id:
+        raise HTTPException(400, "Passkey registration expired. Try again.")
+    try:
+        verification = verify_registration_response(
+            credential=payload.credential,
+            expected_challenge=base64url_to_bytes(challenge),
+            expected_origin=origin,
+            expected_rp_id=rp_id,
+            require_user_verification=True,
+        )
+    except Exception as exc:
+        log.warning("Passkey registration failed: %s", exc)
+        raise HTTPException(400, "Passkey registration failed")
+    credential_id = _b64url(verification.credential_id)
+    if db.scalar(select(PasskeyCredential).where(PasskeyCredential.credential_id == credential_id)):
+        raise HTTPException(409, "Passkey already registered")
+    transports = payload.credential.get("response", {}).get("transports") or []
+    db.add(PasskeyCredential(
+        user_id=user.id,
+        credential_id=credential_id,
+        public_key=_b64url(verification.credential_public_key),
+        sign_count=getattr(verification, "sign_count", 0) or 0,
+        name=(payload.name or "Passkey").strip()[:200] or "Passkey",
+        transports_json=json.dumps(transports),
+        device_type=str(getattr(verification, "credential_device_type", "") or ""),
+        backed_up=bool(getattr(verification, "credential_backed_up", False)),
+    ))
+    db.commit()
+    request.session.pop("passkey_registration_challenge", None)
+    request.session.pop("passkey_registration_origin", None)
+    request.session.pop("passkey_registration_rp_id", None)
+    return {"ok": True}
+
+
+@app.delete("/api/passkeys/{passkey_id}", dependencies=[Depends(csrf_guard)])
+def delete_passkey(passkey_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    credential = db.get(PasskeyCredential, passkey_id)
+    if not credential or credential.user_id != user.id:
+        raise HTTPException(404, "Passkey not found")
+    db.delete(credential)
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/passkeys/authentication/options")
+def passkey_authentication_options(payload: PasskeyAuthenticationOptionsPayload, request: Request, db: Session = Depends(get_db)):
+    origin, rp_id = _webauthn_origin_and_rp_id(request, db)
+    user_id = None
+    allow_credentials = None
+    if payload.email:
+        user = db.scalar(select(User).where(User.email == str(payload.email).lower()))
+        if not user or user.status != "active" or not user.verified_at:
+            raise HTTPException(404, "No passkey is available for this account")
+        credentials = db.scalars(select(PasskeyCredential).where(PasskeyCredential.user_id == user.id)).all()
+        if not credentials:
+            raise HTTPException(404, "No passkey is available for this account")
+        user_id = user.id
+        allow_credentials = [PublicKeyCredentialDescriptor(id=base64url_to_bytes(item.credential_id)) for item in credentials]
+    options = generate_authentication_options(
+        rp_id=rp_id,
+        allow_credentials=allow_credentials,
+        user_verification=UserVerificationRequirement.REQUIRED,
+    )
+    request.session["passkey_authentication_challenge"] = _b64url(options.challenge)
+    request.session["passkey_authentication_origin"] = origin
+    request.session["passkey_authentication_rp_id"] = rp_id
+    request.session["passkey_authentication_user_id"] = user_id
+    return JSONResponse(json.loads(options_to_json(options)))
+
+
+@app.post("/api/passkeys/authentication/verify")
+def verify_passkey_authentication(payload: PasskeyAuthenticationVerifyPayload, request: Request, db: Session = Depends(get_db)):
+    challenge = request.session.get("passkey_authentication_challenge")
+    origin = request.session.get("passkey_authentication_origin")
+    rp_id = request.session.get("passkey_authentication_rp_id")
+    if not challenge or not origin or not rp_id:
+        raise HTTPException(400, "Passkey login expired. Try again.")
+    credential_id = payload.credential.get("rawId") or payload.credential.get("id")
+    credential = db.scalar(select(PasskeyCredential).where(PasskeyCredential.credential_id == credential_id)) if credential_id else None
+    expected_user_id = request.session.get("passkey_authentication_user_id")
+    if not credential or (expected_user_id and credential.user_id != expected_user_id):
+        raise HTTPException(401, "Passkey not recognized")
+    user = db.get(User, credential.user_id)
+    if not user or user.status != "active" or not user.verified_at:
+        raise HTTPException(403, "Account is not available")
+    try:
+        verification = verify_authentication_response(
+            credential=payload.credential,
+            expected_challenge=base64url_to_bytes(challenge),
+            expected_origin=origin,
+            expected_rp_id=rp_id,
+            credential_public_key=base64url_to_bytes(credential.public_key),
+            credential_current_sign_count=credential.sign_count,
+            require_user_verification=True,
+        )
+    except Exception as exc:
+        log.warning("Passkey authentication failed: %s", exc)
+        raise HTTPException(401, "Passkey authentication failed")
+    credential.sign_count = getattr(verification, "new_sign_count", credential.sign_count) or credential.sign_count
+    credential.last_used_at = utcnow()
+    user.last_login_at = utcnow()
+    db.commit()
+    _login_user_session(request, user)
     return {"ok": True}
 
 

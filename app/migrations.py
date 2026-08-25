@@ -176,6 +176,12 @@ def run_migrations() -> None:
                     conn.execute(text("CREATE INDEX IF NOT EXISTS ix_web_exports_expires_at ON web_exports(expires_at)"))
             conn.execute(text("INSERT OR IGNORE INTO schema_migrations(version) VALUES (9)"))
 
+    if 10 not in applied:
+        log.info("Applying database migration 10 (passkey credentials)")
+        Base.metadata.create_all(engine)
+        with engine.begin() as conn:
+            conn.execute(text("INSERT OR IGNORE INTO schema_migrations(version) VALUES (10)"))
+
     # Fail clearly if the Python SQLite build unexpectedly lacks FTS5.
     with engine.connect() as conn:
         if "message_fts" not in inspect(conn).get_table_names():

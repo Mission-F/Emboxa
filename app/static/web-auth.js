@@ -72,6 +72,41 @@ async function send(url, body) {
   return data;
 }
 
+function b64urlToBuffer(value) {
+  const padded = `${value}${'='.repeat((4 - value.length % 4) % 4)}`.replace(/-/g, '+').replace(/_/g, '/');
+  const binary = atob(padded);
+  return Uint8Array.from(binary, char => char.charCodeAt(0)).buffer;
+}
+function bufferToB64url(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  bytes.forEach(byte => { binary += String.fromCharCode(byte); });
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+function credentialToJSON(credential) {
+  const response = {clientDataJSON: bufferToB64url(credential.response.clientDataJSON)};
+  if (credential.response.attestationObject) response.attestationObject = bufferToB64url(credential.response.attestationObject);
+  if (credential.response.authenticatorData) response.authenticatorData = bufferToB64url(credential.response.authenticatorData);
+  if (credential.response.signature) response.signature = bufferToB64url(credential.response.signature);
+  if (credential.response.userHandle) response.userHandle = bufferToB64url(credential.response.userHandle);
+  if (credential.response.getTransports) response.transports = credential.response.getTransports();
+  return {
+    id: credential.id,
+    rawId: bufferToB64url(credential.rawId),
+    type: credential.type,
+    authenticatorAttachment: credential.authenticatorAttachment || undefined,
+    clientExtensionResults: credential.getClientExtensionResults?.() || {},
+    response,
+  };
+}
+function authenticationOptionsFromJSON(options) {
+  const publicKey = {...options, challenge: b64urlToBuffer(options.challenge)};
+  if (publicKey.allowCredentials) {
+    publicKey.allowCredentials = publicKey.allowCredentials.map(item => ({...item, id: b64urlToBuffer(item.id)}));
+  }
+  return publicKey;
+}
+
 function setLoading(button, loading, text) {
   if (!button.dataset.label) button.dataset.label = button.textContent;
   button.disabled = loading;
@@ -124,6 +159,29 @@ if (authForm?.id === 'reset-form' && resetToken) {
   authForm.confirm_password.required = true;
   authForm.querySelector('[type=submit]').textContent = window.EMBOXA_I18N.t('setNewPassword', authLocale?.value || localePreference);
 }
+
+const passkeyLogin = document.querySelector('#passkey-login');
+passkeyLogin?.addEventListener('click', async () => {
+  clearErrors();
+  if (!window.PublicKeyCredential || !navigator.credentials) {
+    authStatus.textContent = locale() === 'it' ? 'Questo browser non supporta le passkey.' : 'This browser does not support passkeys.';
+    return;
+  }
+  const email = authForm?.elements.username?.value?.trim();
+  setLoading(passkeyLogin, true, 'Passkey…');
+  try {
+    const options = await send('/api/passkeys/authentication/options', {email: email || null});
+    const credential = await navigator.credentials.get({publicKey: authenticationOptionsFromJSON(options)});
+    if (!credential) throw new Error(locale() === 'it' ? 'Passkey annullata.' : 'Passkey cancelled.');
+    await send('/api/passkeys/authentication/verify', {credential: credentialToJSON(credential)});
+    window.emboxaTrack?.('passkey_login_completed');
+    location.href = '/app';
+  } catch (error) {
+    authStatus.textContent = error.message || errorText('generic');
+  } finally {
+    setLoading(passkeyLogin, false);
+  }
+});
 
 authForm?.addEventListener('submit', async event => {
   event.preventDefault();

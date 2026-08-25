@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import json
 import tempfile
 from datetime import timedelta
 from pathlib import Path
@@ -12,7 +13,7 @@ from app.config import EXPORTS_DIR, STANDARD_STORAGE_LIMIT_BYTES
 from app.database import SessionLocal
 from app.main import app
 import app.main as main
-from app.models import Account, AppSetting, Snapshot, TelegramLink, User, WebExport, utcnow
+from app.models import Account, AppSetting, PasskeyCredential, Snapshot, TelegramLink, User, WebExport, utcnow
 from app.scheduler import scheduler
 from app.security import encrypt_secret, hash_password
 
@@ -41,6 +42,91 @@ def fake_export_file(name: str, content: bytes) -> tuple:
     path = temp_dir / name
     path.write_bytes(content)
     return path, name
+
+
+def test_passkey_registration_login_and_delete(monkeypatch):
+    class FakeOptions:
+        def __init__(self, challenge: bytes, allow_credentials=None):
+            self.challenge = challenge
+            self.allow_credentials = allow_credentials or []
+
+    class FakeRegistration:
+        credential_id = b"credential-1"
+        credential_public_key = b"public-key-1"
+        sign_count = 1
+        credential_device_type = "multi_device"
+        credential_backed_up = True
+
+    class FakeAuthentication:
+        new_sign_count = 2
+
+    monkeypatch.setattr(main, "generate_registration_options", lambda **kwargs: FakeOptions(b"registration-challenge"))
+    monkeypatch.setattr(main, "generate_authentication_options", lambda **kwargs: FakeOptions(b"authentication-challenge", kwargs.get("allow_credentials")))
+    monkeypatch.setattr(main, "verify_registration_response", lambda **kwargs: FakeRegistration())
+    monkeypatch.setattr(main, "verify_authentication_response", lambda **kwargs: FakeAuthentication())
+
+    def fake_options_to_json(options):
+        payload = {"challenge": main._b64url(options.challenge), "timeout": 60000}
+        if options.allow_credentials:
+            payload["allowCredentials"] = [{"type": "public-key", "id": main._b64url(item.id)} for item in options.allow_credentials]
+        else:
+            payload["rp"] = {"id": "testserver", "name": "Emboxa Web"}
+            payload["user"] = {"id": main._b64url(b"1"), "name": "passkey@example.com", "displayName": "passkey@example.com"}
+            payload["pubKeyCredParams"] = [{"type": "public-key", "alg": -7}]
+        return json.dumps(payload)
+
+    monkeypatch.setattr(main, "options_to_json", fake_options_to_json)
+
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            user = User(username="passkey@example.com", email="passkey@example.com",
+                        password_hash=hash_password("secure-passkey-password"), verified_at=utcnow())
+            db.add(user)
+            db.commit()
+        headers = login(client, "passkey@example.com", "secure-passkey-password")
+        options = client.post("/api/passkeys/register/options", headers=headers)
+        assert options.status_code == 200, options.text
+        assert options.json()["challenge"] == main._b64url(b"registration-challenge")
+        credential_json = {
+            "id": main._b64url(b"credential-1"),
+            "rawId": main._b64url(b"credential-1"),
+            "type": "public-key",
+            "response": {
+                "clientDataJSON": main._b64url(b"client-data"),
+                "attestationObject": main._b64url(b"attestation"),
+                "transports": ["internal"],
+            },
+            "clientExtensionResults": {},
+        }
+        verified = client.post("/api/passkeys/register/verify", json={"credential": credential_json, "name": "Mac Touch ID"}, headers=headers)
+        assert verified.status_code == 200, verified.text
+        listed = client.get("/api/passkeys")
+        assert listed.status_code == 200
+        assert listed.json()[0]["name"] == "Mac Touch ID"
+
+        assert client.post("/api/logout", headers=headers).status_code == 200
+        auth_options = client.post("/api/passkeys/authentication/options", json={"email": "passkey@example.com"})
+        assert auth_options.status_code == 200, auth_options.text
+        assert auth_options.json()["allowCredentials"][0]["id"] == main._b64url(b"credential-1")
+        authenticated = client.post("/api/passkeys/authentication/verify", json={"credential": {
+            "id": main._b64url(b"credential-1"),
+            "rawId": main._b64url(b"credential-1"),
+            "type": "public-key",
+            "response": {
+                "clientDataJSON": main._b64url(b"client-data"),
+                "authenticatorData": main._b64url(b"authenticator-data"),
+                "signature": main._b64url(b"signature"),
+                "userHandle": main._b64url(b"1"),
+            },
+            "clientExtensionResults": {},
+        }})
+        assert authenticated.status_code == 200, authenticated.text
+        assert client.get("/app").status_code == 200
+        headers = csrf(client)
+        passkey_id = client.get("/api/passkeys").json()[0]["id"]
+        assert client.delete(f"/api/passkeys/{passkey_id}", headers=headers).status_code == 200
+        with SessionLocal() as db:
+            assert db.scalar(select(PasskeyCredential)) is None
 
 
 def test_web_multitenant_plans_retention_cleanup_telegram_and_public(monkeypatch):

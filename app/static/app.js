@@ -32,6 +32,41 @@ async function api(url, options = {}) {
   return result;
 }
 
+function b64urlToBuffer(value) {
+  const padded = `${value}${'='.repeat((4 - value.length % 4) % 4)}`.replace(/-/g, '+').replace(/_/g, '/');
+  const binary = atob(padded);
+  return Uint8Array.from(binary, char => char.charCodeAt(0)).buffer;
+}
+function bufferToB64url(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  bytes.forEach(byte => { binary += String.fromCharCode(byte); });
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+function credentialToJSON(credential) {
+  const response = {clientDataJSON: bufferToB64url(credential.response.clientDataJSON)};
+  if (credential.response.attestationObject) response.attestationObject = bufferToB64url(credential.response.attestationObject);
+  if (credential.response.authenticatorData) response.authenticatorData = bufferToB64url(credential.response.authenticatorData);
+  if (credential.response.signature) response.signature = bufferToB64url(credential.response.signature);
+  if (credential.response.userHandle) response.userHandle = bufferToB64url(credential.response.userHandle);
+  if (credential.response.getTransports) response.transports = credential.response.getTransports();
+  return {
+    id: credential.id,
+    rawId: bufferToB64url(credential.rawId),
+    type: credential.type,
+    authenticatorAttachment: credential.authenticatorAttachment || undefined,
+    clientExtensionResults: credential.getClientExtensionResults?.() || {},
+    response,
+  };
+}
+function registrationOptionsFromJSON(options) {
+  const publicKey = {...options, challenge: b64urlToBuffer(options.challenge), user: {...options.user, id: b64urlToBuffer(options.user.id)}};
+  if (publicKey.excludeCredentials) {
+    publicKey.excludeCredentials = publicKey.excludeCredentials.map(item => ({...item, id: b64urlToBuffer(item.id)}));
+  }
+  return publicKey;
+}
+
 function toast(message, kind = '') {
   const el = $('#toast');
   el.textContent = message; el.className = `toast show ${kind}`;
@@ -357,7 +392,52 @@ $('#archive-back').addEventListener('click',showDashboard);$('#home-button').add
 $('#mobile-folders').addEventListener('click',()=>{const target=state.account?$('#folder-sidebar'):$('.main-sidebar');target.classList.toggle('open');});
 $('#nav-accounts').addEventListener('click',()=>{$('#account-grid').scrollIntoView({behavior:'smooth',block:'start'});$('.main-sidebar').classList.remove('open');});
 $('#nav-archives').addEventListener('click',()=>{$('#account-grid').scrollIntoView({behavior:'smooth',block:'start'});toast('Apri un archivio dalla relativa scheda');$('.main-sidebar').classList.remove('open');});
-$('#nav-settings').addEventListener('click',()=>{$('#settings-dialog').showModal();$('.main-sidebar').classList.remove('open');});
+async function loadPasskeys() {
+  const list = $('#passkey-list');
+  if (!list) return;
+  list.innerHTML = '<p class="muted">Caricamento passkey…</p>';
+  try {
+    const passkeys = await api('/api/passkeys');
+    list.innerHTML = passkeys.length ? passkeys.map(item => `<article class="passkey-item">
+      <div><b>${esc(item.name || 'Passkey')}</b><small>${item.last_used_at ? `Ultimo uso ${date(item.last_used_at)}` : `Creata ${date(item.created_at)}`}${item.backed_up ? ' · sincronizzata' : ''}</small></div>
+      <button class="ghost danger-text" type="button" data-passkey-delete="${item.id}">Rimuovi</button>
+    </article>`).join('') : '<p class="muted">Nessuna passkey registrata. Aggiungine una per accedere senza digitare la password.</p>';
+  } catch (error) {
+    list.innerHTML = `<p class="muted">${esc(error.message)}</p>`;
+  }
+}
+async function addPasskey() {
+  const status = $('#passkey-status');
+  if (!window.PublicKeyCredential || !navigator.credentials) {
+    status.textContent = 'Questo browser non supporta le passkey.';
+    return;
+  }
+  status.textContent = 'Apri il prompt del browser…';
+  try {
+    const options = await api('/api/passkeys/register/options', {method:'POST'});
+    const credential = await navigator.credentials.create({publicKey: registrationOptionsFromJSON(options)});
+    if (!credential) throw new Error('Registrazione annullata');
+    await api('/api/passkeys/register/verify', {method:'POST', body:JSON.stringify({credential: credentialToJSON(credential), name: 'Passkey'})});
+    status.textContent = '';
+    toast('Passkey aggiunta');
+    loadPasskeys();
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+$('#nav-settings').addEventListener('click',()=>{$('#settings-dialog').showModal();$('.main-sidebar').classList.remove('open');loadPasskeys();});
+$('#passkey-add')?.addEventListener('click', addPasskey);
+$('#passkey-list')?.addEventListener('click', async event => {
+  const button = event.target.closest('[data-passkey-delete]');
+  if (!button) return;
+  try {
+    await api(`/api/passkeys/${button.dataset.passkeyDelete}`, {method:'DELETE'});
+    toast('Passkey rimossa');
+    loadPasskeys();
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+});
 
 $('#version-select').addEventListener('change',async event=>{state.snapshotId=Number(event.target.value);state.folderId=null;state.trash=false;state.page=1;state.attachments.page=1;renderVersions();state.folders=await api(`/api/accounts/${state.account.id}/folders?${snapshotParam()}`);renderFolders();await loadStats();if(state.archiveView==='attachments')await loadAttachments();else await loadMessages();});
 $('#versions-button').addEventListener('click',()=>{$('#versions-dialog').showModal();renderVersions();});
