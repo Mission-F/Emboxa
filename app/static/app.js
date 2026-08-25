@@ -69,7 +69,7 @@ function accountCard(account) {
       <div class="card-stats"><div><strong>${account.message_count.toLocaleString('it-IT')}</strong><span>messaggi</span></div><div><strong>${bytes(account.archive_size)}</strong><span>archivio</span></div></div>
       <div class="last-backup"><span class="status-dot ${esc(account.last_backup_status)}"></span><div><strong>${esc(statusLabel(account.last_backup_status))}</strong><small>${date(account.last_backup_at)}${account.next_backup_at ? ` · Prossimo ${date(account.next_backup_at)}` : ''}</small></div></div>
       ${account.last_backup_error ? `<p class="card-error" title="${esc(account.last_backup_error)}">${esc(account.last_backup_error)}</p>` : ''}${progress}
-      <div class="card-actions"><button data-action="backup" data-id="${account.id}" class="primary" ${!account.imap_enabled||job?'disabled':''}>Backup ora</button><button data-action="open" data-id="${account.id}" class="secondary" ${!account.has_archive?'disabled':''}>Apri archivio</button></div>
+      <div class="card-actions"><button data-action="backup" data-id="${account.id}" class="primary" ${!account.imap_enabled||job?'disabled':''}>Backup ora</button><button data-action="open" data-id="${account.id}" class="secondary" ${!account.has_archive?'disabled':''}>Apri archivio</button>${account.has_archive?`<button data-action="transfer" data-id="${account.id}" class="secondary">IMAP Transfer</button>`:''}</div>
     </article>`;
 }
 
@@ -151,6 +151,7 @@ document.addEventListener('click', async event => {
     if (button.dataset.action === 'cancel' && await confirmAction('Interrompere il backup?', 'Lo staging incompleto sarà eliminato. Il backup precedente resterà disponibile.')) { await api(`/api/jobs/${id}/cancel`, {method:'POST'}); toast('Interruzione richiesta'); }
     if (button.dataset.action === 'test-saved') { button.disabled=true; const result=await api(`/api/accounts/${id}/test`,{method:'POST'}); toast(`Connessione riuscita · ${result.folders} cartelle`); button.disabled=false; }
     if (button.dataset.action === 'open') await openArchive(account);
+    if (button.dataset.action === 'transfer') await openTransfer(id);
     if (button.dataset.action === 'export') location.href = `/api/accounts/${id}/export`;
     if (button.dataset.action === 'permanent' && await confirmAction('Make permanent?', 'Standard plans can change the permanent mailbox only after the 31-day lock.')) { await api(`/api/accounts/${id}/permanent`,{method:'POST'});toast('Permanent mailbox updated');loadAccounts(); }
     if (button.dataset.action === 'clear' && await confirmAction('Cancellare l’archivio locale?', 'La configurazione IMAP resterà salvata, ma EML e allegati locali saranno rimossi.')) { await api(`/api/accounts/${id}/archive`,{method:'DELETE'}); toast('Archivio cancellato'); loadAccounts(); }

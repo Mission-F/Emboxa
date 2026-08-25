@@ -35,12 +35,14 @@ def login(client: TestClient, email: str, password: str) -> dict[str, str]:
 
 
 def test_web_multitenant_plans_retention_cleanup_telegram_and_public(monkeypatch):
-    sent: list[tuple[str, str, str]] = []
-    monkeypatch.setattr(main, "_send_email", lambda to, subject, body: sent.append((to, subject, body)))
+    sent: list[tuple[str, str, str, str | None]] = []
+    monkeypatch.setattr(main, "_send_email", lambda to, subject, body, html=None: sent.append((to, subject, body, html)))
     with TestClient(app) as client:
         registered = client.post("/api/register", json={"email": "user@example.com", "password": "secure-user-password"})
         assert registered.status_code == 200, registered.text
-        code = re.search(r"\b(\d{6})\b", sent[-1][2]).group(1)
+        assert sent[-1][3] and "EMBOXA" in sent[-1][3] and "Verify your email" in sent[-1][3]
+        code_parts = re.search(r"\b(\d{3})\s+(\d{3})\b", sent[-1][2]).groups()
+        code = "".join(code_parts)
         verified = client.post("/api/verify", json={"email": "user@example.com", "code": code})
         assert verified.status_code == 200
         headers = csrf(client)
@@ -132,4 +134,6 @@ def test_web_multitenant_plans_retention_cleanup_telegram_and_public(monkeypatch
         assert "noindex" not in public.headers.get("x-robots-tag", "")
         assert "Disallow: /app" in client.get("/robots.txt").text
         assert "<urlset" in client.get("/sitemap.xml").text
+        assert "x-default" in client.get("/sitemap.xml").text
+        assert client.get("/en/imap-email-backup").status_code == 200
         assert "noindex" in client.get("/app").headers["x-robots-tag"]

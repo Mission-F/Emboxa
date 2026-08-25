@@ -34,6 +34,7 @@
 - Provides a fast, webmail-style archive with search, filters and conversations.
 - Collects archived files in a dedicated Attachments view.
 - Imports and exports portable `.mailvault` archives.
+- Restores original RFC822 messages to an owned or temporary IMAP destination, with folder preservation, duplicate checks, progress and cancellation.
 - Runs as a multi-architecture container on Docker-compatible servers and TrueNAS Community.
 
 ## Quick Start
@@ -82,7 +83,7 @@ For a public HTTPS reverse proxy, use the final `https://` URL and set `COOKIE_S
 ## How it works
 
 ```text
-IMAP mailbox → queued backup → versioned local archive → search / read / export
+IMAP mailbox → queued backup → versioned local archive → search / read / export / IMAP restore
 ```
 
 EMBOXA first writes a staging snapshot. Only a completed, validated backup becomes the active version, so an interrupted run does not replace the previous usable archive. Saved service and IMAP credentials are encrypted using the key under `/data/secrets`.
@@ -108,6 +109,8 @@ The screenshots use synthetic example mailboxes and files.
 | `DATA_DIR` | `/data` | Persistent database, archives, exports and keys |
 
 Runtime settings such as schedules, retention, SMTP and Telegram are managed from the application. Never commit `.env`, credentials, databases, archive files or the contents of `/data`.
+
+The Administration panel also controls branded transactional-email options, public SEO defaults and the Standard-plan IMAP Transfer limit. Standard defaults to two queued transfers per UTC calendar month; connection tests do not consume quota and Plus is unlimited.
 
 ## Updating
 
@@ -145,6 +148,12 @@ For TrueNAS, snapshot or copy the complete host dataset while the app is stopped
 ## Import and export
 
 Use **Import archive** in the sidebar to validate and load a `.mailvault` package. Open the `…` menu on a mailbox and choose **Export archive** to create a portable copy. Keep important exports outside the live application volume as an additional backup.
+
+## IMAP Transfer
+
+Open **IMAP Transfer** from the sidebar or a mailbox card. Choose a completed snapshot, then an existing owned mailbox or temporary IMAP credentials. EMBOXA validates the destination before queueing, appends the original RFC822 bytes, preserves source folders by default and can skip messages whose `Message-ID` already exists. Temporary passwords are encrypted only for the queued job and erased at completion, failure or cancellation.
+
+For Google Search Console, submit `https://emboxa.eu/sitemap.xml` after the public-domain setting points to the production HTTPS hostname.
 
 ## Troubleshooting
 

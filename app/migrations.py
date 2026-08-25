@@ -130,6 +130,20 @@ def run_migrations() -> None:
             conn.execute(text("DROP INDEX IF EXISTS uq_single_running_backup"))
             conn.execute(text("INSERT OR IGNORE INTO schema_migrations(version) VALUES (7)"))
 
+    if 8 not in applied:
+        log.info("Applying database migration 8 (persistent IMAP transfer queue)")
+        Base.metadata.create_all(engine)
+        with engine.begin() as conn:
+            conn.execute(text(
+                "UPDATE imap_transfer_jobs SET status='queued', cancel_requested=0 "
+                "WHERE status='running'"
+            ))
+            conn.execute(text(
+                "UPDATE imap_transfer_jobs SET status='cancelled', finished_at=COALESCE(finished_at,CURRENT_TIMESTAMP), "
+                "encrypted_password=NULL WHERE status='cancelling'"
+            ))
+            conn.execute(text("INSERT OR IGNORE INTO schema_migrations(version) VALUES (8)"))
+
     # Fail clearly if the Python SQLite build unexpectedly lacks FTS5.
     with engine.connect() as conn:
         if "message_fts" not in inspect(conn).get_table_names():

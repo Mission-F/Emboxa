@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+from html import escape
 import logging
 import mimetypes
 import re
@@ -41,10 +42,12 @@ from .config import (
     TELEGRAM_BOT_USERNAME, ensure_data_dirs,
 )
 from .database import SessionLocal, get_db
+from .email_templates import password_reset_email, test_email, verification_email
 from .imap_adapter import test_imap_connection
+from .imap_transfer import recover_interrupted_transfers, transfer_manager
 from .migrations import run_migrations
 from .models import (
-    Account, AdminAudit, AppSetting, ArchiveDeletionAudit, Attachment, BackupJob, Folder, Message,
+    Account, AdminAudit, AppSetting, ArchiveDeletionAudit, Attachment, BackupJob, Folder, IMAPTransferJob, Message,
     PermanentMailboxHistory, SecurityToken, Snapshot, TelegramLink, User, WebExport, utcnow,
 )
 from .scheduler import scheduler
@@ -83,15 +86,17 @@ async def lifespan(_app: FastAPI):
             db.commit()
             log.info("Initial Web administrator created")
     recover_interrupted_jobs()
+    recover_interrupted_transfers()
     scheduler.start()
     log.info("EMBOXA avviato")
     yield
     scheduler.stop()
     backup_manager.shutdown()
+    transfer_manager.shutdown()
     log.info("EMBOXA arrestato")
 
 
-app = FastAPI(title="EMBOXA Web", version="1.0.0", lifespan=lifespan, docs_url=None, redoc_url=None)
+app = FastAPI(title="Emboxa Web", version="1.0.0", lifespan=lifespan, docs_url=None, redoc_url=None)
 app.add_middleware(
     SessionMiddleware,
     secret_key=get_session_secret(),
@@ -168,6 +173,10 @@ def current_user(request: Request, db: Session = Depends(get_db)) -> User:
     if match:
         job = db.get(BackupJob, int(match.group(1)))
         owner_id = job.account.owner_id if job else None
+    match = re.match(r"^/api/imap-transfers/(\d+)", path)
+    if match:
+        transfer = db.get(IMAPTransferJob, int(match.group(1)))
+        owner_id = transfer.owner_id if transfer else None
     match = re.match(r"^/api/messages/(\d+)", path)
     if match:
         message = db.get(Message, int(match.group(1)))
@@ -229,6 +238,7 @@ def _active_snapshot(db: Session, account_id: int, snapshot_id: int | None = Non
 class RegisterPayload(BaseModel):
     email: EmailStr
     password: str = Field(min_length=10, max_length=256)
+    locale: Literal["it", "en", "fr", "de", "es", "pt"] = "en"
 
 
 class LoginPayload(BaseModel):
@@ -251,7 +261,7 @@ class ResetConfirmPayload(BaseModel):
 
 
 class PreferencesPayload(BaseModel):
-    locale: Literal["auto", "it", "en"] | None = None
+    locale: Literal["auto", "it", "en", "fr", "de", "es", "pt"] | None = None
     tutorial_completed: bool | None = None
 
 
@@ -280,8 +290,8 @@ class AdminSettingsPayload(BaseModel):
     public_app_name: str = Field(default="Emboxa Web", min_length=1, max_length=80)
     public_domain: str = Field(default="https://emboxa.eu", min_length=1, max_length=500)
     support_email: str = Field(default="info@missionf.it", max_length=320)
-    default_language: Literal["it", "en"] = "it"
-    available_languages: str = Field(default="it,en", max_length=50)
+    default_language: Literal["it", "en", "fr", "de", "es", "pt"] = "en"
+    available_languages: str = Field(default="it,en,fr,de,es,pt", max_length=50)
     registration_enabled: bool = True
     standard_storage_limit_bytes: int = Field(ge=1)
     standard_mailbox_limit: int = Field(ge=1, le=1000)
@@ -292,6 +302,12 @@ class AdminSettingsPayload(BaseModel):
     backup_queue_enabled: bool = True
     default_backup_retention_versions: int = Field(default=3, ge=1, le=100)
     backup_anomaly_threshold: float = Field(default=.2, ge=.01, le=.9)
+    standard_imap_transfer_limit: int = Field(default=2, ge=0, le=1000)
+    imap_transfer_concurrency: int = Field(default=2, ge=1, le=8)
+    email_logo_url: str = Field(default="", max_length=500)
+    email_footer_text: str = Field(default="", max_length=500)
+    seo_default_title: str = Field(default="Emboxa Web — secure IMAP email backup", max_length=120)
+    seo_default_description: str = Field(default="", max_length=320)
     export_ttl_hours: int = Field(default=24, ge=1, le=8760)
     export_max_bytes: int = Field(default=10 * 1024**3, ge=1)
     cleanup_enabled: bool = True
@@ -340,6 +356,29 @@ class ConnectionPayload(BaseModel):
     password: str = Field(min_length=1, max_length=1024)
 
 
+class IMAPTransferDestinationPayload(BaseModel):
+    account_id: int | None = None
+    label: str = Field(default="Destination mailbox", min_length=1, max_length=200)
+    imap_host: str | None = Field(default=None, max_length=255)
+    imap_port: int | None = Field(default=None, ge=1, le=65535)
+    security: Literal["ssl", "starttls", "plain"] = "ssl"
+    imap_username: str | None = Field(default=None, max_length=320)
+    password: str | None = Field(default=None, max_length=1024)
+
+
+class IMAPTransferTestPayload(BaseModel):
+    destination: IMAPTransferDestinationPayload
+
+
+class IMAPTransferPayload(BaseModel):
+    snapshot_id: int | None = None
+    destination: IMAPTransferDestinationPayload
+    mode: Literal["preserve", "single"] = "preserve"
+    single_folder: str | None = Field(default=None, max_length=500)
+    mappings: dict[str, str] = Field(default_factory=dict)
+    skip_duplicates: bool = True
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
@@ -386,7 +425,7 @@ def _smtp_client():
         raise
 
 
-def _send_email(to: str, subject: str, text_body: str) -> None:
+def _send_email(to: str, subject: str, text_body: str, html_body: str | None = None) -> None:
     from_email = get_setting("smtp_from_email", SMTP_FROM_EMAIL)
     from_name = get_setting("smtp_from_name", SMTP_FROM_NAME)
     if not from_email:
@@ -399,6 +438,8 @@ def _send_email(to: str, subject: str, text_body: str) -> None:
     if reply_to:
         message["Reply-To"] = reply_to
     message.set_content(text_body)
+    if html_body:
+        message.add_alternative(html_body, subtype="html")
     with _smtp_client() as client:
         client.send_message(message)
 
@@ -414,22 +455,50 @@ def _issue_verification(db: Session, user: User) -> None:
                           expires_at=utcnow() + timedelta(minutes=15))
     db.add(token)
     db.flush()
-    _send_email(user.email, "Your EMBOXA verification code", f"Your verification code is {code}. It expires in 15 minutes.")
+    text_body, html_body = verification_email(
+        code,
+        support_email=_contact_email(),
+        public_url=get_setting("public_domain", PUBLIC_APP_URL),
+        logo_url=get_setting("email_logo_url"),
+        footer_text=get_setting("email_footer_text", "MissionF"),
+        locale=user.locale if user.locale != "auto" else "en",
+    )
+    _send_email(user.email, "Your EMBOXA verification code", text_body, html_body)
 
 
 @app.get("/", response_class=HTMLResponse)
 def public_home(request: Request):
-    available = [item.strip() for item in get_setting("available_languages", "it,en").split(",") if item.strip() in {"it", "en"}]
+    available = [item.strip() for item in get_setting("available_languages", "it,en,fr,de,es,pt").split(",") if item.strip() in {"it", "en"}]
     if not available:
         available = ["it", "en"]
     preferred = next((part.split(";")[0].strip().lower().split("-")[0]
                       for part in request.headers.get("accept-language", "").split(",")
                       if part.split(";")[0].strip().lower().split("-")[0] in available), None)
-    locale = preferred or get_setting("default_language", "it")
-    return RedirectResponse(f"/{locale if locale in available else available[0]}/", status_code=307)
+    locale = preferred or get_setting("default_language", "en")
+    return RedirectResponse(f"/{locale if locale in available else ('en' if 'en' in available else available[0])}/", status_code=307)
 
 
-PUBLIC_PAGES = {"features", "self-hosted", "privacy", "cookies", "legal", "terms"}
+PUBLIC_PAGES = {"features", "self-hosted", "imap-email-backup", "email-archive", "truenas-email-backup",
+                "privacy", "cookies", "legal", "terms"}
+
+SEO_PAGES = {
+    "home": {
+        "it": ("Emboxa Web — backup IMAP e archivio email", "Backup versionati delle caselle IMAP, ricerca full-text, allegati originali e ripristino RFC822. Piano Standard gratuito e versione self-hosted.", "backup email IMAP, archivio email, backup casella email, ripristino IMAP"),
+        "en": ("Emboxa Web — secure IMAP email backup", "Versioned IMAP mailbox backup, full-text search, original attachments and RFC822 restore. Free Standard plan and self-hosted edition.", "IMAP email backup, email archive, mailbox backup, IMAP restore"),
+    },
+    "imap-email-backup": {
+        "it": ("Backup email IMAP completo e versionato — Emboxa", "Copia messaggi, cartelle e allegati da qualsiasi provider IMAP in un archivio ricercabile e ripristinabile.", "backup email IMAP, backup posta elettronica, copia casella IMAP"),
+        "en": ("Complete versioned IMAP email backup — Emboxa", "Copy messages, folders and attachments from any IMAP provider into a searchable, restorable archive.", "IMAP email backup, mailbox backup, email backup service"),
+    },
+    "email-archive": {
+        "it": ("Archivio email ricercabile con allegati originali — Emboxa", "Conserva versioni separate della casella, cerca messaggi e allegati e ripristina gli originali RFC822.", "archivio email, conservazione email, ricerca allegati email"),
+        "en": ("Searchable email archive with original attachments — Emboxa", "Keep separate mailbox versions, search messages and attachments, and restore original RFC822 content.", "email archive, searchable email backup, email attachments archive"),
+    },
+    "truenas-email-backup": {
+        "it": ("Backup email self-hosted su TrueNAS — Emboxa", "Installa Emboxa con Docker Compose o TrueNAS Community e conserva database, chiavi e archivi sulla tua NAS.", "TrueNAS email backup, self hosted email archive, Docker IMAP backup"),
+        "en": ("Self-hosted email backup for TrueNAS — Emboxa", "Install Emboxa with Docker Compose or TrueNAS Community and keep its database, keys and archives on your NAS.", "TrueNAS email backup, self-hosted email archive, Docker IMAP backup"),
+    },
+}
 
 
 @app.get("/it/", response_class=HTMLResponse)
@@ -443,6 +512,14 @@ def localized_public(request: Request, page: str = "home"):
     public_url = get_setting("public_domain", PUBLIC_APP_URL).rstrip("/")
     analytics_id = get_setting("google_analytics_id", GOOGLE_ANALYTICS_ID) if get_bool_setting("analytics_enabled") else ""
     canonical = f"{public_url}/{locale}/" + ("" if page == "home" else page)
+    fallback_title = get_setting("seo_default_title", "Emboxa Web — secure IMAP email backup")
+    fallback_description = get_setting("seo_default_description") or "Versioned IMAP email backup and searchable email archive."
+    seo_title, seo_description, seo_keywords = SEO_PAGES.get(page, {}).get(locale, (
+        f"{page.replace('-', ' ').title()} — Emboxa Web", fallback_description, "IMAP backup, email archive"
+    ))
+    if page == "home" and locale == "en":
+        seo_title = fallback_title or seo_title
+        seo_description = fallback_description or seo_description
     return templates.TemplateResponse(request, "public.html", {
         "locale": locale, "page": page, "canonical": canonical, "public_url": public_url,
         "app_name": get_setting("public_app_name"), "analytics_id": analytics_id, "from_email": _contact_email(),
@@ -455,6 +532,7 @@ def localized_public(request: Request, page: str = "home"):
         "permanent_limit": get_int_setting("permanent_mailbox_limit", 1),
         "legal_entity": LEGAL_ENTITY_NAME, "legal_address": LEGAL_ADDRESS, "legal_vat": LEGAL_VAT_ID,
         "legal_email": LEGAL_CONTACT_EMAIL,
+        "seo_title": seo_title, "seo_description": seo_description, "seo_keywords": seo_keywords,
     })
 
 
@@ -471,8 +549,14 @@ def sitemap():
     for page in ["", *sorted(PUBLIC_PAGES)]:
         for locale in ("it", "en"):
             path = f"/{locale}/" + page
-            alternate = "en" if locale == "it" else "it"
-            urls.append(f"<url><loc>{public_url}{path}</loc><xhtml:link rel='alternate' hreflang='{alternate}' href='{public_url}/{alternate}/{page}'/></url>")
+            base = escape(public_url, quote=True)
+            urls.append(
+                f"<url><loc>{base}{path}</loc>"
+                f"<xhtml:link rel='alternate' hreflang='it' href='{base}/it/{page}'/>"
+                f"<xhtml:link rel='alternate' hreflang='en' href='{base}/en/{page}'/>"
+                f"<xhtml:link rel='alternate' hreflang='x-default' href='{base}/en/{page}'/>"
+                f"<changefreq>{'weekly' if not page else 'monthly'}</changefreq></url>"
+            )
     xml = "<?xml version='1.0' encoding='UTF-8'?><urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9' xmlns:xhtml='http://www.w3.org/1999/xhtml'>" + "".join(urls) + "</urlset>"
     return Response(xml, media_type="application/xml")
 
@@ -489,7 +573,7 @@ def register(payload: RegisterPayload, db: Session = Depends(get_db)):
     email = str(payload.email).lower()
     if db.scalar(select(User).where(User.email == email)):
         raise HTTPException(409, "An account already exists for this email")
-    user = User(username=email, email=email, password_hash=hash_password(payload.password),
+    user = User(username=email, email=email, password_hash=hash_password(payload.password), locale=payload.locale,
                 storage_limit_bytes=get_int_setting("standard_storage_limit_bytes", STANDARD_STORAGE_LIMIT_BYTES, db))
     db.add(user)
     try:
@@ -579,7 +663,16 @@ def request_password_reset(payload: ResetRequestPayload, db: Session = Depends(g
                              expires_at=utcnow() + timedelta(hours=1)))
         db.flush()
         public_url = get_setting("public_domain", PUBLIC_APP_URL, db).rstrip("/")
-        _send_email(user.email, "Reset your EMBOXA password", f"Open {public_url}/reset-password?token={quote(raw)} within one hour.")
+        reset_url = f"{public_url}/reset-password?token={quote(raw)}"
+        text_body, html_body = password_reset_email(
+            reset_url,
+            support_email=_contact_email(),
+            public_url=public_url,
+            logo_url=get_setting("email_logo_url"),
+            footer_text=get_setting("email_footer_text", "MissionF"),
+            locale=user.locale if user.locale != "auto" else "en",
+        )
+        _send_email(user.email, "Reset your EMBOXA password", text_body, html_body)
         db.commit()
     return {"ok": True}
 
@@ -701,8 +794,8 @@ def admin_settings(_admin: User = Depends(admin_user), db: Session = Depends(get
         "public_app_name": get_setting("public_app_name", db=db),
         "public_domain": get_setting("public_domain", PUBLIC_APP_URL, db),
         "support_email": get_setting("support_email", LEGAL_CONTACT_EMAIL, db),
-        "default_language": get_setting("default_language", "it", db),
-        "available_languages": get_setting("available_languages", "it,en", db),
+        "default_language": get_setting("default_language", "en", db),
+        "available_languages": get_setting("available_languages", "it,en,fr,de,es,pt", db),
         "registration_enabled": get_bool_setting("registration_enabled", db=db),
         "standard_storage_limit_bytes": get_int_setting("standard_storage_limit_bytes", STANDARD_STORAGE_LIMIT_BYTES, db),
         "standard_mailbox_limit": get_int_setting("standard_mailbox_limit", STANDARD_MAILBOX_LIMIT, db),
@@ -713,6 +806,12 @@ def admin_settings(_admin: User = Depends(admin_user), db: Session = Depends(get
         "backup_queue_enabled": get_bool_setting("backup_queue_enabled", db=db),
         "default_backup_retention_versions": get_int_setting("default_backup_retention_versions", 3, db),
         "backup_anomaly_threshold": get_float_setting("backup_anomaly_threshold", .2, db),
+        "standard_imap_transfer_limit": get_int_setting("standard_imap_transfer_limit", 2, db),
+        "imap_transfer_concurrency": get_int_setting("imap_transfer_concurrency", 2, db),
+        "email_logo_url": get_setting("email_logo_url", db=db),
+        "email_footer_text": get_setting("email_footer_text", db=db),
+        "seo_default_title": get_setting("seo_default_title", "Emboxa Web — secure IMAP email backup", db),
+        "seo_default_description": get_setting("seo_default_description", db=db),
         "export_ttl_hours": get_int_setting("export_ttl_hours", EXPORT_TTL_HOURS, db),
         "export_max_bytes": get_int_setting("export_max_bytes", 10 * 1024**3, db),
         "cleanup_enabled": get_bool_setting("cleanup_enabled", db=db),
@@ -758,6 +857,12 @@ def admin_save_settings(payload: AdminSettingsPayload, admin: User = Depends(adm
         "backup_queue_enabled": str(payload.backup_queue_enabled).lower(),
         "default_backup_retention_versions": str(payload.default_backup_retention_versions),
         "backup_anomaly_threshold": str(payload.backup_anomaly_threshold),
+        "standard_imap_transfer_limit": str(payload.standard_imap_transfer_limit),
+        "imap_transfer_concurrency": str(payload.imap_transfer_concurrency),
+        "email_logo_url": payload.email_logo_url.strip(),
+        "email_footer_text": payload.email_footer_text.strip(),
+        "seo_default_title": payload.seo_default_title.strip(),
+        "seo_default_description": payload.seo_default_description.strip(),
         "export_ttl_hours": str(payload.export_ttl_hours), "export_max_bytes": str(payload.export_max_bytes),
         "cleanup_enabled": str(payload.cleanup_enabled).lower(),
         "analytics_enabled": str(payload.analytics_enabled).lower(),
@@ -792,6 +897,7 @@ def admin_save_settings(payload: AdminSettingsPayload, admin: User = Depends(adm
                               target_id="global", detail="Telegram webhook configuration failed"))
         db.commit()
     backup_manager.refresh()
+    transfer_manager.refresh()
     return {"ok": True, "telegram": {"connected": telegram_configured, "username": telegram_username,
             "webhook_status": get_setting("telegram_webhook_status", "not_configured", db), "warning": telegram_warning}}
 
@@ -802,7 +908,14 @@ def admin_test_smtp(payload: SMTPTestPayload, admin: User = Depends(admin_user))
         with _smtp_client():
             pass
         if payload.email:
-            _send_email(str(payload.email), "EMBOXA SMTP test", "SMTP delivery from Emboxa Web is working.")
+            public_url = get_setting("public_domain", PUBLIC_APP_URL).rstrip("/")
+            text_body, html_body = test_email(
+                public_url=public_url,
+                logo_url=get_setting("email_logo_url") or None,
+                footer_text=get_setting("email_footer_text") or None,
+                support_email=_contact_email(),
+            )
+            _send_email(str(payload.email), "EMBOXA SMTP test", text_body, html_body)
     except smtplib.SMTPAuthenticationError as exc:
         raise HTTPException(502, "Unable to authenticate with SMTP server") from exc
     except HTTPException:
@@ -981,10 +1094,14 @@ def _telegram_dashboard(db: Session, user: User) -> tuple[str, dict]:
     mailbox_text = "Unlimited" if user.plan == "PLUS" else f"{mailboxes} / {get_int_setting('standard_mailbox_limit', STANDARD_MAILBOX_LIMIT, db)}"
     queue_position = (db.scalar(select(func.count(BackupJob.id)).where(BackupJob.status == "queued", BackupJob.id <= job.id)) or 0) if job and job.status == "queued" else 0
     backup = "No active backup" if not job else (f"{job.status.title()} · {job.percent}%" if job.status != "queued" else f"Queued · Position {queue_position}")
-    text_value = f"EMBOXA\n\nPlan\n{user.plan}\n\nStorage\n{storage}\n\nMailboxes\n{mailbox_text}\n\nBackup\n{backup}"
-    keyboard = {"inline_keyboard": [[{"text": "Mailboxes", "callback_data": "mailboxes"}, {"text": "Backup", "callback_data": "backup"}],
-                                    [{"text": "Status", "callback_data": "status"}, {"text": "Storage", "callback_data": "storage"}],
-                                    [{"text": "Refresh", "callback_data": "dashboard"}]]}
+    transfers = db.scalar(select(func.count(IMAPTransferJob.id)).where(
+        IMAPTransferJob.owner_id == user.id, IMAPTransferJob.status.in_(["queued", "running", "cancelling"])
+    )) or 0
+    text_value = f"EMBOXA · PRIVATE ARCHIVE\n\nPlan  {user.plan}\nStorage  {storage}\nMailboxes  {mailbox_text}\n\nBackup\n{backup}\n\nIMAP transfers active  {transfers}"
+    keyboard = {"inline_keyboard": [[{"text": "📬 Mailboxes", "callback_data": "mailboxes"}, {"text": "▶️ Backup", "callback_data": "backup"}],
+                                    [{"text": "📊 Activity", "callback_data": "status"}, {"text": "💾 Storage", "callback_data": "storage"}],
+                                    [{"text": "🕘 History", "callback_data": "history"}, {"text": "⚙️ Settings", "callback_data": "settings"}],
+                                    [{"text": "↻ Refresh", "callback_data": "dashboard"}]]}
     return text_value, keyboard
 
 
@@ -992,13 +1109,30 @@ def _telegram_render(db: Session, user: User, chat_id: str, message_id: str | No
     text_value, keyboard = _telegram_dashboard(db, user)
     accounts = db.scalars(select(Account).where(Account.owner_id == user.id).order_by(Account.display_name)).all()
     if view in {"mailboxes", "backup"}:
-        text_value = "Mailboxes\n\n" + ("\n".join(f"• {item.display_name}" for item in accounts) or "No mailboxes")
+        text_value = "Mailboxes\n\n" + ("\n".join(f"• {item.display_name}\n  {item.email} · {item.message_count:,} messages" for item in accounts) or "No mailboxes yet")
         rows = [[{"text": f"Backup {item.display_name}", "callback_data": f"backup:{item.id}"}] for item in accounts] if view == "backup" else []
         keyboard = {"inline_keyboard": rows + [[{"text": "Back", "callback_data": "dashboard"}]]}
     elif view == "status":
         jobs = db.scalars(select(BackupJob).join(Account).where(Account.owner_id == user.id).order_by(BackupJob.id.desc()).limit(5)).all()
         text_value = "Backup status\n\n" + ("\n".join(f"{job.account.display_name}: {job.status} · {job.percent}% · ETA {job.eta_seconds or '—'}" for job in jobs) or "No backup history")
         keyboard = {"inline_keyboard": [[{"text": "Back", "callback_data": "dashboard"}]]}
+    elif view == "storage":
+        used = _storage_used(db, user.id)
+        limit = "Unlimited" if user.plan == "PLUS" else f"{user.storage_limit_bytes / 1024**3:.0f} GB"
+        text_value = f"Storage\n\nUsed  {used / 1024**3:.2f} GB\nLimit  {limit}\n\nOriginal RFC822 messages and attachments are included."
+        keyboard = {"inline_keyboard": [[{"text": "Back", "callback_data": "dashboard"}]]}
+    elif view == "history":
+        backups = db.scalars(select(BackupJob).join(Account).where(Account.owner_id == user.id).order_by(BackupJob.id.desc()).limit(4)).all()
+        transfers = db.scalars(select(IMAPTransferJob).where(IMAPTransferJob.owner_id == user.id).order_by(IMAPTransferJob.id.desc()).limit(4)).all()
+        lines = [f"Backup · {item.account.display_name} · {item.status}" for item in backups]
+        lines += [f"Transfer · {item.destination_label} · {item.status}" for item in transfers]
+        text_value = "Recent history\n\n" + ("\n".join(lines) or "No completed operations yet")
+        keyboard = {"inline_keyboard": [[{"text": "Back", "callback_data": "dashboard"}]]}
+    elif view == "settings":
+        link = db.scalar(select(TelegramLink).where(TelegramLink.user_id == user.id))
+        enabled = [] if not link else [label for value, label in ((link.notify_completed,"Completed"),(link.notify_failed,"Failed"),(link.notify_expiring,"Expiring"),(link.notify_storage,"Storage")) if value]
+        text_value = "Notification settings\n\nEnabled: " + (", ".join(enabled) or "None") + "\n\nChange these preferences in Emboxa Web → Preferences."
+        keyboard = {"inline_keyboard": [[{"text": "Open Emboxa Web", "url": get_setting("public_domain", PUBLIC_APP_URL).rstrip("/") + "/app"}], [{"text": "Back", "callback_data": "dashboard"}]]}
     payload = {"chat_id": chat_id, "text": text_value, "reply_markup": keyboard}
     if message_id:
         payload["message_id"] = int(message_id)
@@ -1062,8 +1196,8 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
     update = await request.json(); message = update.get("message") or {}; callback = update.get("callback_query") or {}
     chat_id = str((callback.get("message") or message).get("chat", {}).get("id", ""))
     if message.get("text") == "/start":
-        _telegram_call("sendMessage", {"chat_id": chat_id, "text": f"Welcome to EMBOXA\n\nYour Chat ID:\n{chat_id}\n\nAdd this ID in EMBOXA → Settings → Telegram.",
-                                       "reply_markup": {"inline_keyboard": [[{"text": "Open dashboard", "callback_data": "dashboard"}]]}})
+        _telegram_call("sendMessage", {"chat_id": chat_id, "text": f"Welcome to EMBOXA\n\nYour Chat ID:\n{chat_id}\n\nCopy it into Emboxa Web → Preferences → Telegram. Then use Send test dashboard to create your single interactive dashboard message.",
+                                       "reply_markup": {"inline_keyboard": [[{"text": "Open Emboxa Web", "url": get_setting("public_domain", PUBLIC_APP_URL).rstrip("/") + "/app"}]]}})
         return {"ok": True}
     link = db.scalar(select(TelegramLink).where(TelegramLink.chat_id == chat_id))
     if not link:
@@ -1080,11 +1214,20 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
         if user.plan != "PLUS" and _storage_used(db, user.id) >= user.storage_limit_bytes:
             _telegram_call("answerCallbackQuery", {"callback_query_id": callback.get("id"), "text": "Storage limit reached", "show_alert": True})
             return {"ok": True}
-        backup_manager.start(account.id); data = "status"
-    _telegram_render(db, user, chat_id, message_id, data)
+        try:
+            _job_id, created = backup_manager.start(account.id)
+            if callback.get("id") and not created:
+                _telegram_call("answerCallbackQuery", {"callback_query_id": callback["id"], "text": "A backup is already queued or running for this mailbox.", "show_alert": True})
+                return {"ok": True}
+            data = "status"
+        except Exception:
+            if callback.get("id"):
+                _telegram_call("answerCallbackQuery", {"callback_query_id": callback["id"], "text": "The backup could not be queued. Check the mailbox in Emboxa Web.", "show_alert": True})
+            return {"ok": True}
+    result = _telegram_render(db, user, chat_id, message_id, data)
     if callback.get("id"):
         _telegram_call("answerCallbackQuery", {"callback_query_id": callback["id"]})
-    link.dashboard_message_id = message_id; db.commit()
+    link.dashboard_message_id = str(result.get("message_id") or message_id or "") or None; db.commit()
     return {"ok": True}
 
 
@@ -1150,9 +1293,17 @@ def list_accounts(user: User = Depends(current_user), db: Session = Depends(get_
 def web_usage(user: User = Depends(current_user), db: Session = Depends(get_db)):
     used = _storage_used(db, user.id)
     count = db.scalar(select(func.count(Account.id)).where(Account.owner_id == user.id)) or 0
+    transfer_quota = _transfer_quota(db, user)
+    active_backups = db.scalar(select(func.count(BackupJob.id)).join(Account).where(
+        Account.owner_id == user.id, BackupJob.status.in_(["queued", "running", "cancelling"])
+    )) or 0
+    active_transfers = db.scalar(select(func.count(IMAPTransferJob.id)).where(
+        IMAPTransferJob.owner_id == user.id, IMAPTransferJob.status.in_(["queued", "running", "cancelling"])
+    )) or 0
     return {"plan": user.plan, "storage_used": used, "storage_limit": None if user.plan == "PLUS" else user.storage_limit_bytes,
             "mailbox_count": count, "mailbox_limit": None if user.plan == "PLUS" else get_int_setting("standard_mailbox_limit", STANDARD_MAILBOX_LIMIT, db),
-            "contact": _contact_email(), "over_quota": user.plan != "PLUS" and used >= user.storage_limit_bytes}
+            "contact": _contact_email(), "over_quota": user.plan != "PLUS" and used >= user.storage_limit_bytes,
+            "active_backups": active_backups, "active_transfers": active_transfers, "imap_transfer_quota": transfer_quota}
 
 
 @app.post("/api/accounts/test", dependencies=[Depends(csrf_guard)])
@@ -1161,6 +1312,162 @@ def test_connection(payload: ConnectionPayload):
         return test_imap_connection(payload.imap_host, payload.imap_port, payload.security, payload.imap_username, payload.password)
     except Exception as exc:
         raise HTTPException(400, f"Connessione IMAP fallita: {exc}") from exc
+
+
+def _transfer_quota(db: Session, user: User) -> dict:
+    period = utcnow().strftime("%Y-%m")
+    used = db.scalar(select(func.count(IMAPTransferJob.id)).where(
+        IMAPTransferJob.owner_id == user.id, IMAPTransferJob.quota_period == period
+    )) or 0
+    limit = None if user.plan == "PLUS" else get_int_setting("standard_imap_transfer_limit", 2, db)
+    return {"period": period, "used": used, "limit": limit, "remaining": None if limit is None else max(0, limit - used)}
+
+
+def _destination_credentials(db: Session, user: User, destination: IMAPTransferDestinationPayload) -> dict:
+    if destination.account_id is not None:
+        account = db.get(Account, destination.account_id)
+        if not account or account.owner_id != user.id:
+            raise HTTPException(404, "Destination mailbox not found")
+        if not account.imap_enabled or not account.encrypted_password:
+            raise HTTPException(409, "Destination mailbox has no IMAP credentials")
+        return {
+            "account": account,
+            "label": account.display_name,
+            "host": account.imap_host or "",
+            "port": int(account.imap_port or 993),
+            "security": account.security,
+            "username": account.imap_username or account.email,
+            "password": decrypt_secret(account.encrypted_password),
+        }
+    if not all((destination.imap_host, destination.imap_port, destination.imap_username, destination.password)):
+        raise HTTPException(422, "Complete the temporary IMAP destination credentials")
+    return {
+        "account": None,
+        "label": destination.label.strip(),
+        "host": destination.imap_host.strip(),
+        "port": destination.imap_port,
+        "security": destination.security,
+        "username": destination.imap_username.strip(),
+        "password": destination.password,
+    }
+
+
+def _test_destination(credentials: dict) -> dict:
+    try:
+        return test_imap_connection(
+            credentials["host"], credentials["port"], credentials["security"],
+            credentials["username"], credentials["password"],
+        )
+    except Exception as exc:
+        raise HTTPException(400, f"Destination IMAP connection failed: {exc}") from exc
+
+
+def _transfer_json(job: IMAPTransferJob) -> dict:
+    return {
+        "id": job.id, "account_id": job.account_id, "snapshot_id": job.snapshot_id,
+        "destination_account_id": job.destination_account_id, "destination_label": job.destination_label,
+        "mode": job.mode, "single_folder": job.single_folder, "mappings": json.loads(job.mappings_json or "{}"),
+        "skip_duplicates": job.skip_duplicates, "status": job.status, "current_folder": job.current_folder,
+        "processed_messages": job.processed_messages, "total_messages": job.total_messages,
+        "skipped_messages": job.skipped_messages, "failed_messages": job.failed_messages,
+        "percent": job.percent, "throughput": job.throughput, "eta_seconds": job.eta_seconds,
+        "cancel_requested": job.cancel_requested, "quota_period": job.quota_period, "error": job.error,
+        "started_at": job.started_at, "finished_at": job.finished_at, "created_at": job.created_at,
+    }
+
+
+@app.post("/api/imap-transfer/test", dependencies=[Depends(csrf_guard)])
+def test_transfer_destination(
+    payload: IMAPTransferTestPayload, user: User = Depends(current_user), db: Session = Depends(get_db)
+):
+    credentials = _destination_credentials(db, user, payload.destination)
+    result = _test_destination(credentials)
+    return {**result, "quota_consumed": False, "destination": credentials["label"]}
+
+
+@app.get("/api/accounts/{account_id}/transfer-preview", dependencies=[Depends(current_user)])
+def transfer_preview(
+    account_id: int, snapshot_id: int | None = None, user: User = Depends(current_user), db: Session = Depends(get_db)
+):
+    account, snapshot = _active_snapshot(db, account_id, snapshot_id)
+    folders = db.scalars(select(Folder).where(Folder.snapshot_id == snapshot.id).order_by(Folder.name)).all()
+    return {
+        "account": {"id": account.id, "display_name": account.display_name},
+        "snapshot": {"id": snapshot.id, "messages": snapshot.message_count, "size": snapshot.archive_size},
+        "folders": [{"id": folder.id, "name": folder.name, "messages": folder.message_count} for folder in folders],
+        "destinations": [{"id": item.id, "display_name": item.display_name, "email": item.email}
+                         for item in db.scalars(select(Account).where(Account.owner_id == user.id).order_by(Account.display_name)).all()],
+        "quota": _transfer_quota(db, user),
+    }
+
+
+@app.post("/api/accounts/{account_id}/transfers", dependencies=[Depends(csrf_guard)])
+def create_transfer(
+    account_id: int, payload: IMAPTransferPayload, user: User = Depends(current_user), db: Session = Depends(get_db)
+):
+    account, snapshot = _active_snapshot(db, account_id, payload.snapshot_id)
+    quota = _transfer_quota(db, user)
+    if quota["limit"] is not None and quota["remaining"] <= 0:
+        raise HTTPException(409, f"Monthly IMAP transfer limit reached ({quota['limit']}). The quota resets next month.")
+    if payload.mode == "single" and not (payload.single_folder or "").strip():
+        raise HTTPException(422, "Choose a destination folder")
+    source_folders = {item.name for item in db.scalars(select(Folder).where(Folder.snapshot_id == snapshot.id)).all()}
+    mappings = {str(key).strip(): str(value).strip() for key, value in payload.mappings.items()
+                if str(key).strip() in source_folders and str(value).strip()}
+    if any("\x00" in value or len(value) > 500 for value in mappings.values()):
+        raise HTTPException(422, "Invalid folder mapping")
+    credentials = _destination_credentials(db, user, payload.destination)
+    _test_destination(credentials)  # Validation/test never consumes quota; only the queued job below does.
+    job = IMAPTransferJob(
+        owner_id=user.id, account_id=account.id, snapshot_id=snapshot.id,
+        destination_account_id=credentials["account"].id if credentials["account"] else None,
+        destination_label=credentials["label"],
+        destination_host=None if credentials["account"] else credentials["host"],
+        destination_port=None if credentials["account"] else credentials["port"],
+        destination_security=None if credentials["account"] else credentials["security"],
+        destination_username=None if credentials["account"] else credentials["username"],
+        encrypted_password=None if credentials["account"] else encrypt_secret(credentials["password"]),
+        mode=payload.mode, single_folder=(payload.single_folder or "").strip() or None,
+        mappings_json=json.dumps(mappings, ensure_ascii=False), skip_duplicates=payload.skip_duplicates,
+        total_messages=snapshot.message_count, quota_period=quota["period"], status="queued",
+    )
+    db.add(job)
+    db.commit()
+    transfer_manager.submit(job.id)
+    return {"ok": True, "job": _transfer_json(job), "quota": _transfer_quota(db, user)}
+
+
+@app.get("/api/imap-transfers", dependencies=[Depends(current_user)])
+def list_transfers(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    jobs = db.scalars(select(IMAPTransferJob).where(
+        IMAPTransferJob.owner_id == user.id
+    ).order_by(IMAPTransferJob.id.desc()).limit(100)).all()
+    return {"items": [_transfer_json(job) for job in jobs], "quota": _transfer_quota(db, user)}
+
+
+@app.get("/api/imap-transfers/{transfer_id}", dependencies=[Depends(current_user)])
+def get_transfer(transfer_id: int, db: Session = Depends(get_db)):
+    job = db.get(IMAPTransferJob, transfer_id)
+    if not job:
+        raise HTTPException(404, "IMAP transfer not found")
+    return _transfer_json(job)
+
+
+@app.post("/api/imap-transfers/{transfer_id}/cancel", dependencies=[Depends(csrf_guard)])
+def cancel_transfer(transfer_id: int, db: Session = Depends(get_db)):
+    job = db.get(IMAPTransferJob, transfer_id)
+    if not job or job.status not in {"queued", "running", "cancelling"}:
+        raise HTTPException(409, "The transfer can no longer be cancelled")
+    job.cancel_requested = True
+    if job.status == "queued":
+        job.status = "cancelled"
+        job.finished_at = utcnow()
+        job.encrypted_password = None
+        job.quota_period = None
+    else:
+        job.status = "cancelling"
+    db.commit()
+    return {"ok": True, "job": _transfer_json(job)}
 
 
 @app.post("/api/accounts", dependencies=[Depends(csrf_guard)])

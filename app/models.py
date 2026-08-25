@@ -68,6 +68,9 @@ class Account(Base):
         back_populates="account", foreign_keys="Snapshot.account_id", cascade="all, delete-orphan"
     )
     jobs: Mapped[list["BackupJob"]] = relationship(back_populates="account", cascade="all, delete-orphan")
+    transfer_jobs: Mapped[list["IMAPTransferJob"]] = relationship(
+        back_populates="account", foreign_keys="IMAPTransferJob.account_id", cascade="all, delete-orphan"
+    )
 
 
 class Snapshot(Base):
@@ -192,6 +195,58 @@ class BackupJob(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
     account: Mapped[Account] = relationship(back_populates="jobs")
+
+
+class IMAPTransferJob(Base):
+    """Persistent RFC822 restore/transfer queue item.
+
+    Temporary destination credentials are encrypted and erased as soon as the job
+    reaches a terminal state. Existing destinations reference another owned account.
+    """
+
+    __tablename__ = "imap_transfer_jobs"
+    __table_args__ = (
+        Index("ix_imap_transfer_owner_status", "owner_id", "status"),
+        Index("ix_imap_transfer_account_status", "account_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    account_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    snapshot_id: Mapped[int] = mapped_column(ForeignKey("snapshots.id", ondelete="CASCADE"), index=True)
+    destination_account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    destination_label: Mapped[str] = mapped_column(String(200), default="Destination mailbox")
+    destination_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    destination_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    destination_security: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    destination_username: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    encrypted_password: Mapped[str | None] = mapped_column(Text, nullable=True)
+    mode: Mapped[str] = mapped_column(String(20), default="preserve")
+    single_folder: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    mappings_json: Mapped[str] = mapped_column(Text, default="{}")
+    skip_duplicates: Mapped[bool] = mapped_column(Boolean, default=True)
+    status: Mapped[str] = mapped_column(String(30), default="queued", index=True)
+    current_folder: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    processed_messages: Mapped[int] = mapped_column(Integer, default=0)
+    total_messages: Mapped[int] = mapped_column(Integer, default=0)
+    skipped_messages: Mapped[int] = mapped_column(Integer, default=0)
+    failed_messages: Mapped[int] = mapped_column(Integer, default=0)
+    percent: Mapped[int] = mapped_column(Integer, default=0)
+    throughput: Mapped[float] = mapped_column(Float, default=0.0)
+    eta_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    quota_period: Mapped[str | None] = mapped_column(String(7), nullable=True, index=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+    account: Mapped[Account] = relationship(back_populates="transfer_jobs", foreign_keys=[account_id])
+    snapshot: Mapped[Snapshot] = relationship(foreign_keys=[snapshot_id])
+    destination_account: Mapped[Account | None] = relationship(foreign_keys=[destination_account_id])
 
 
 class ArchiveDeletionAudit(Base):

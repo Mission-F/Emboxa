@@ -25,18 +25,14 @@ def notify_backup(account_id: int, status: str) -> None:
         if not enabled or not token or not allowed:
             return
         text = f"EMBOXA\n\n{account.display_name}\nBackup {status}."
-        method = "editMessageText" if link.dashboard_message_id else "sendMessage"
+        method = "sendMessage"
         payload = {"chat_id": link.chat_id, "text": text,
                    "reply_markup": {"inline_keyboard": [[{"text": "Open dashboard", "callback_data": "dashboard"}]]}}
-        if link.dashboard_message_id:
-            payload["message_id"] = int(link.dashboard_message_id)
         try:
             request = Request(f"https://api.telegram.org/bot{token}/{method}", data=json.dumps(payload).encode(),
                               headers={"Content-Type": "application/json"}, method="POST")
             with urlopen(request, timeout=12) as response:
                 result = json.loads(response.read()).get("result") or {}
-            if not link.dashboard_message_id and result.get("message_id"):
-                link.dashboard_message_id = str(result["message_id"]); db.commit()
         except Exception:
             log.warning("Telegram notification failed for account %s", account_id)
 
@@ -48,19 +44,24 @@ def notify_user(user_id: int, text: str, preference: str) -> bool:
         token = get_setting("telegram_bot_token", db=db)
         if not enabled or not token or not link or not getattr(link, preference, False):
             return False
-        method = "editMessageText" if link.dashboard_message_id else "sendMessage"
+        method = "sendMessage"
         payload = {"chat_id": link.chat_id, "text": f"EMBOXA\n\n{text}",
                    "reply_markup": {"inline_keyboard": [[{"text": "Open dashboard", "callback_data": "dashboard"}]]}}
-        if link.dashboard_message_id:
-            payload["message_id"] = int(link.dashboard_message_id)
         try:
             request = Request(f"https://api.telegram.org/bot{token}/{method}", data=json.dumps(payload).encode(),
                               headers={"Content-Type": "application/json"}, method="POST")
             with urlopen(request, timeout=12) as response:
                 result = json.loads(response.read()).get("result") or {}
-            if not link.dashboard_message_id and result.get("message_id"):
-                link.dashboard_message_id = str(result["message_id"]); db.commit()
             return True
         except Exception:
             log.warning("Telegram user notification failed for user %s", user_id)
             return False
+
+
+def notify_transfer(user_id: int, destination: str, status: str, processed: int, skipped: int) -> bool:
+    label = "completed" if status == "completed" else "failed"
+    return notify_user(
+        user_id,
+        f"IMAP transfer {label}.\nDestination: {destination}\nProcessed: {processed}\nDuplicates skipped: {skipped}",
+        "notify_completed" if status == "completed" else "notify_failed",
+    )

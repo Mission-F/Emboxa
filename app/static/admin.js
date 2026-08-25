@@ -87,7 +87,7 @@ $('#admin-users').addEventListener('click', async event => {
 });
 
 const form = $('#admin-settings-form');
-const numericFields = new Set(['smtp_port','standard_storage_limit_bytes','standard_mailbox_limit','standard_retention_days','permanent_mailbox_limit','permanent_mailbox_lock_days','backup_concurrency','default_backup_retention_versions','backup_anomaly_threshold','export_ttl_hours','export_max_bytes']);
+const numericFields = new Set(['smtp_port','standard_storage_limit_bytes','standard_mailbox_limit','standard_retention_days','permanent_mailbox_limit','permanent_mailbox_lock_days','standard_imap_transfer_limit','imap_transfer_concurrency','backup_concurrency','default_backup_retention_versions','backup_anomaly_threshold','export_ttl_hours','export_max_bytes']);
 const checkboxFields = new Set(['smtp_enabled','registration_enabled','backup_queue_enabled','cleanup_enabled','analytics_enabled']);
 const webhookLabel = status => ({connected: t('webhookActive'), failed: t('webhookFailed'), warning: t('webhookWarning'), not_configured: t('webhookNotConfigured'), unknown: t('webhookUnknown')})[status] || status;
 

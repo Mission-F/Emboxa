@@ -82,6 +82,33 @@ class StandardIMAPAdapter:
         messages = int(_value(info, "EXISTS", 0) or 0)
         return str(uidvalidity) if uidvalidity is not None else None, messages
 
+    def ensure_folder(self, name: str) -> None:
+        """Create a destination folder only when it does not already exist."""
+        assert self.client
+        if not self.client.folder_exists(name):
+            self.client.create_folder(name)
+
+    def select_write_folder(self, name: str) -> None:
+        assert self.client
+        self.client.select_folder(name, readonly=False)
+
+    def has_message_id(self, message_id: str) -> bool:
+        """Check the selected folder for a duplicate without downloading messages."""
+        assert self.client
+        if not message_id:
+            return False
+        return bool(self.client.search(["HEADER", "Message-ID", message_id]))
+
+    def append_message(
+        self, folder: str, raw: bytes, flags: list[str] | None = None, internal_date: datetime | None = None
+    ) -> None:
+        """Append the original RFC822 bytes; MIME is never reconstructed."""
+        assert self.client
+        safe_flags = [flag for flag in (flags or []) if flag.lower() in {
+            "\\seen", "\\answered", "\\flagged", "\\draft"
+        }]
+        self.client.append(folder, raw, flags=safe_flags, msg_time=internal_date)
+
     def message_uids(self) -> list[int]:
         assert self.client
         return list(self.client.search(["ALL"]))
