@@ -114,8 +114,8 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .wide { width: 100%; }
 
 /* Dashboard shell */
-.dashboard-shell { min-height: calc(100vh - var(--topbar-height)); display: grid; grid-template-columns: 220px minmax(0, 1fr); }
-.main-sidebar { position: sticky; top: var(--topbar-height); height: calc(100vh - var(--topbar-height)); display: flex; flex-direction: column; padding: 22px 14px; background: var(--surface-secondary); border-right: 1px solid var(--border); }
+.dashboard-shell { min-height: calc(100vh - var(--topbar-height)); display: grid; grid-template-columns: 220px minmax(0, 1fr); align-items: start; }
+.main-sidebar { position: sticky; top: var(--topbar-height); align-self: start; height: calc(100dvh - var(--topbar-height)); max-height: calc(100dvh - var(--topbar-height)); overflow: hidden auto; overscroll-behavior: contain; display: flex; flex-direction: column; padding: 22px 14px; background: var(--surface-secondary); border-right: 1px solid var(--border); }
 .main-sidebar nav { display: flex; flex-direction: column; gap: 4px; }
 .nav-item { position: relative; width: 100%; min-height: 44px; display: flex; align-items: center; gap: 11px; padding: 0 12px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-secondary); text-align: left; font-size: 13px; font-weight: 680; }
 .nav-item:hover { background: var(--surface); color: var(--heading); }
