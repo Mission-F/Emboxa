@@ -347,7 +347,7 @@ class AdminSettingsPayload(BaseModel):
     telegram_mode: Literal["webhook"] = "webhook"
     telegram_webhook_url: str = ""
     public_app_name: str = Field(default="Emboxa Web", min_length=1, max_length=80)
-    public_domain: str = Field(default="https://emboxa.eu", min_length=1, max_length=500)
+    public_domain: str = Field(default=PUBLIC_APP_URL, min_length=1, max_length=500)
     support_email: str = Field(default="info@missionf.it", max_length=320)
     default_language: Literal["it", "en", "fr", "de", "es", "pt"] = "en"
     available_languages: str = Field(default="it,en,fr,de,es,pt", max_length=50)
@@ -1504,8 +1504,8 @@ def _microsoft_redirect_uri(db: Session | None = None) -> str:
 
 
 @app.get("/api/auth/microsoft/status")
-def microsoft_status(_user: User = Depends(current_user)):
-    return {"configured": bool(MICROSOFT_CLIENT_ID), "provider": "microsoft"}
+def microsoft_status(_user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return {"configured": bool(MICROSOFT_CLIENT_ID), "provider": "microsoft", "redirect_uri": _microsoft_redirect_uri(db)}
 
 
 @app.get("/api/auth/microsoft/start")
