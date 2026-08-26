@@ -33,7 +33,7 @@
 - Keeps separate backup versions and protects important snapshots.
 - Provides a fast, webmail-style archive with search, filters and conversations.
 - Collects archived files in a dedicated Attachments view.
-- Imports and exports portable `.mailvault` archives.
+- Imports and exports portable `.mailvault` archives; PLUS users can also import Apple Mail/Thunderbird-style `.mbox` exports as offline accounts without synchronization.
 - Uses IMAP Transfer to restore original RFC822 messages to Gmail, Outlook, Yahoo, iCloud or custom IMAP destinations, with folder preservation, duplicate checks, progress and cancellation.
 - Runs as a multi-architecture container on Docker-compatible servers and TrueNAS Community.
 
@@ -147,7 +147,9 @@ For TrueNAS, snapshot or copy the complete host dataset while the app is stopped
 
 ## Import and export
 
-Use **Import archive** in the sidebar to validate and load a `.mailvault` package. Open the `…` menu on a mailbox and choose **Export archive** to create a portable copy. EMBOXA first prepares the export in the server-side exports folder, then streams it through the browser and starts the local `.mailvault` download with a short-lived browser object URL.
+Use **Import archive** in the sidebar to validate and load a `.mailvault` package. PLUS users can use **MBOX** to select an exported MBOX folder, including Apple Mail folders such as `Posta in arrivo.mbox/mbox`; EMBOXA creates an offline account that can be browsed, searched and exported, but does not try to synchronize with a provider.
+
+Open the `…` menu on a mailbox and choose **Export archive** to create a portable copy. EMBOXA first prepares a fast, stream-friendly `.mailvault` package in the server-side exports folder, then starts the direct browser download without loading the entire archive into memory.
 
 Admins can set **Export TTL (hours)** to `0` to keep generated export packages indefinitely. Standard users still count active exports against their storage quota. PLUS users ignore export size, storage and duration limits, so their exports are kept until manually removed or the user is deleted.
 

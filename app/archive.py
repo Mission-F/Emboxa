@@ -132,7 +132,12 @@ def build_export(account_id: int) -> tuple[Path, str]:
         export_name = safe_filename(f"{account.display_name}-{utcnow():%Y%m%d-%H%M}.mailvault", "archive.mailvault")
         export_path = temp_dir / export_name
         checksum_lines: list[str] = []
-        with zipfile.ZipFile(export_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6, allowZip64=True) as bundle:
+        # Keep exports fast and stream-friendly. The archive already stores EML
+        # and attachment blobs, which are often compressed formats themselves;
+        # deflating large mailboxes here can make the UI appear stuck for a long
+        # time and may trigger Cloudflare/browser timeouts. ZIP_STORED keeps the
+        # portable .mailvault layout while prioritising successful export.
+        with zipfile.ZipFile(export_path, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as bundle:
             for metadata_path in (folders_path, messages_path, attachments_path):
                 arcname = f"metadata/{metadata_path.name}"
                 checksum_lines.append(f"{_hash_file(metadata_path)}  {arcname}")

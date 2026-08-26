@@ -6,6 +6,7 @@ import hashlib
 from html import escape
 import logging
 import mimetypes
+import os
 import re
 import secrets
 import shutil
@@ -16,14 +17,14 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from email.message import EmailMessage
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Literal
 from urllib.parse import quote, urlparse
 from urllib.request import Request as URLRequest, urlopen
 
 import bleach
 from bleach.css_sanitizer import CSSSanitizer
-from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -65,6 +66,7 @@ from .graph_adapter import exchange_code, graph_json, microsoft_authorize_url, m
 from .imap_adapter import test_imap_connection
 from .imap_transfer import recover_interrupted_transfers, transfer_manager
 from .migrations import run_migrations
+from .mbox_import import MboxImportError, MboxSource, folder_name_from_upload, import_mbox_sources
 from .models import (
     Account, AdminAudit, AppSetting, ArchiveDeletionAudit, Attachment, BackupJob, Folder, IMAPTransferJob, Message,
     PasskeyCredential, PermanentMailboxHistory, SecurityToken, Snapshot, TelegramLink, User, WebExport, utcnow,
@@ -2220,6 +2222,165 @@ def download_export(public_id: str, user: User = Depends(current_user), db: Sess
                         headers={"Cache-Control": "no-store"})
 
 
+MBOX_IMPORT_LOCK = threading.Lock()
+MBOX_IMPORT_JOBS: dict[str, dict] = {}
+MBOX_IMPORT_JOB_RETENTION = timedelta(hours=6)
+
+
+def _is_mbox_upload(filename: str) -> bool:
+    clean = (filename or "").replace("\\", "/").strip("/")
+    if not clean:
+        return False
+    parts = [part.lower() for part in PurePosixPath(clean).parts if part and part != "."]
+    if not parts or parts[-1] in {".ds_store", "table_of_contents"}:
+        return False
+    return parts[-1] == "mbox" or parts[-1].endswith(".mbox") or any(part.endswith(".mbox") for part in parts[:-1])
+
+
+def _cleanup_mbox_import_jobs() -> None:
+    cutoff = utcnow() - MBOX_IMPORT_JOB_RETENTION
+    with MBOX_IMPORT_LOCK:
+        for job_id, job in list(MBOX_IMPORT_JOBS.items()):
+            finished_at = job.get("finished_at")
+            if finished_at and finished_at < cutoff:
+                MBOX_IMPORT_JOBS.pop(job_id, None)
+
+
+def _mbox_import_job_response(job: dict) -> dict:
+    response = {
+        "job_id": job["id"],
+        "status": job["status"],
+        "percent": job["percent"],
+        "detail": job["detail"],
+        "status_url": f"/api/import/mbox/jobs/{job['id']}",
+        "created_at": job["created_at"],
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+        "messages": job.get("messages", 0),
+    }
+    if job.get("error"):
+        response["error"] = job["error"]
+    if job.get("account"):
+        response["account"] = job["account"]
+    return response
+
+
+def _set_mbox_import_job(job_id: str, **changes) -> None:
+    with MBOX_IMPORT_LOCK:
+        job = MBOX_IMPORT_JOBS.get(job_id)
+        if job:
+            job.update(changes)
+
+
+def _run_mbox_import_job(job_id: str, user_id: int, upload_dir: Path, sources: list[MboxSource], display_name: str, email: str) -> None:
+    _set_mbox_import_job(job_id, status="running", percent=10, detail="Import MBOX avviato.", started_at=utcnow())
+    try:
+        def progress(percent: int, messages: int, folder: str) -> None:
+            _set_mbox_import_job(
+                job_id,
+                percent=percent,
+                messages=messages,
+                detail=f"{folder} · {messages} messaggi importati",
+            )
+
+        account_id = import_mbox_sources(sources, user_id, display_name=display_name, email=email, progress=progress)
+        with SessionLocal() as db:
+            account = db.get(Account, account_id)
+            if not account:
+                raise MboxImportError("Account importato non trovato")
+            _set_mbox_import_job(
+                job_id,
+                status="completed",
+                percent=100,
+                detail="Import MBOX completato.",
+                account=_account_json(account),
+                finished_at=utcnow(),
+            )
+    except Exception as exc:
+        detail = getattr(exc, "detail", None) or str(exc) or "Import MBOX failed"
+        log.warning("MBOX import job %s failed: %s", job_id, detail)
+        _set_mbox_import_job(job_id, status="failed", percent=100, detail=detail, error=detail, finished_at=utcnow())
+    finally:
+        shutil.rmtree(upload_dir, ignore_errors=True)
+
+
+@app.post("/api/import/mbox", dependencies=[Depends(csrf_guard)])
+async def upload_mbox_import(
+    files: Annotated[list[UploadFile], File()],
+    display_name: Annotated[str, Form()] = "Archivio MBOX importato",
+    email: Annotated[str, Form()] = "mbox-import@local.invalid",
+    user: User = Depends(current_user),
+):
+    if user.plan != "PLUS":
+        raise HTTPException(403, "L'import MBOX è una funzione PLUS")
+    _cleanup_mbox_import_jobs()
+    IMPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    upload_dir = Path(tempfile.mkdtemp(prefix="mbox-upload-", dir=IMPORTS_DIR))
+    sources: list[MboxSource] = []
+    total_size = 0
+    try:
+        for index, file in enumerate(files):
+            original = file.filename or f"upload-{index}.mbox"
+            if not _is_mbox_upload(original):
+                await file.close()
+                continue
+            destination = upload_dir / f"{index:05d}.mbox"
+            size = 0
+            with destination.open("wb") as target:
+                while chunk := await file.read(1024 * 1024):
+                    size += len(chunk)
+                    total_size += len(chunk)
+                    if total_size > IMPORT_MAX_BYTES:
+                        raise HTTPException(413, "I file MBOX superano il limite di import configurato")
+                    target.write(chunk)
+            await file.close()
+            sources.append(MboxSource(destination, original, folder_name_from_upload(original)))
+        if not sources:
+            raise HTTPException(400, "Seleziona uno o più file MBOX validi")
+        job_id = str(uuid.uuid4())
+        job = {
+            "id": job_id,
+            "user_id": user.id,
+            "status": "queued",
+            "percent": 5,
+            "detail": f"{len(sources)} file MBOX caricati. Import in coda.",
+            "created_at": utcnow(),
+            "started_at": None,
+            "finished_at": None,
+            "messages": 0,
+            "error": "",
+            "account": None,
+        }
+        with MBOX_IMPORT_LOCK:
+            MBOX_IMPORT_JOBS[job_id] = job
+        thread = threading.Thread(
+            target=_run_mbox_import_job,
+            args=(job_id, user.id, upload_dir, sources, display_name, email),
+            name=f"emboxa-mbox-{job_id[:8]}",
+            daemon=True,
+        )
+        thread.start()
+        return _mbox_import_job_response(job)
+    except Exception:
+        shutil.rmtree(upload_dir, ignore_errors=True)
+        raise
+    finally:
+        for file in files:
+            try:
+                await file.close()
+            except Exception:
+                pass
+
+
+@app.get("/api/import/mbox/jobs/{job_id}", dependencies=[Depends(current_user)])
+def mbox_import_job_status(job_id: str, user: User = Depends(current_user)):
+    with MBOX_IMPORT_LOCK:
+        job = MBOX_IMPORT_JOBS.get(job_id)
+        if not job or job["user_id"] != user.id:
+            raise HTTPException(404, "MBOX import job not found")
+        return _mbox_import_job_response(dict(job))
+
+
 @app.post("/api/import", dependencies=[Depends(csrf_guard)])
 async def upload_import(file: Annotated[UploadFile, File()], user: User = Depends(current_user), db: Session = Depends(get_db)):
     if user.plan != "PLUS" and (db.scalar(select(func.count(Account.id)).where(Account.owner_id == user.id)) or 0) >= get_int_setting("standard_mailbox_limit", STANDARD_MAILBOX_LIMIT, db):
@@ -2228,7 +2389,6 @@ async def upload_import(file: Annotated[UploadFile, File()], user: User = Depend
         raise HTTPException(400, "Seleziona un file .mailvault")
     IMPORTS_DIR.mkdir(parents=True, exist_ok=True)
     descriptor, temp_name = tempfile.mkstemp(prefix="upload-", suffix=".mailvault", dir=IMPORTS_DIR)
-    import os
     os.close(descriptor)
     temp_path = Path(temp_name)
     size = 0

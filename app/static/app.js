@@ -98,10 +98,12 @@ async function loadAccounts(quiet = false) {
 function accountCard(account) {
   const job = account.job;
   const microsoft = account.auth_provider === 'microsoft';
+  const mbox = account.auth_provider === 'mbox';
+  const providerLabel = microsoft ? ' · Microsoft Graph' : mbox ? ' · MBOX offline' : '';
   const progress = job ? `<div class="job"><div><span>${esc(job.current_folder || statusLabel(job.status))}</span><strong>${job.status==='queued'?'In coda':`${job.percent}%`}</strong></div><div class="progress"><i style="width:${job.percent}%"></i></div><small>${job.processed_messages.toLocaleString('it-IT')} / ${job.total_messages ? job.total_messages.toLocaleString('it-IT') : '?'} messaggi · ${job.attachment_count.toLocaleString('it-IT')} allegati${job.status==='running'?` · ${job.throughput.toFixed(1)} msg/s · ETA ${duration(job.eta_seconds)}`:''}</small><button data-action="cancel" data-id="${job.id}" class="text-button danger-text">Interrompi</button></div>` : '';
   return `<article class="account-card" data-account-card="${account.id}">
-      <div class="card-top"><div class="account-avatar">${microsoft?'M':esc(account.display_name.charAt(0).toUpperCase())}</div><div class="account-title"><h2>${esc(account.display_name)}</h2><p>${esc(account.email)}${microsoft?' · Microsoft Graph':''}</p></div>
-      <details class="menu" data-account-menu="${account.id}" ${state.openAccountMenuId===account.id?'open':''}><summary aria-label="Azioni account ${esc(account.display_name)}" aria-haspopup="menu" aria-expanded="${state.openAccountMenuId===account.id?'true':'false'}">${icon('dots')}</summary><div role="menu">${microsoft?'':`<button role="menuitem" data-action="edit" data-id="${account.id}">Modifica IMAP</button>`}${account.imap_enabled?`<button role="menuitem" data-action="test-saved" data-id="${account.id}">Test connessione</button>`:''}${microsoft?`<button role="menuitem" data-action="disconnect-microsoft" data-id="${account.id}" class="danger-text">Scollega Microsoft</button>`:''}${!account.is_permanent?`<button role="menuitem" data-action="permanent" data-id="${account.id}">Make permanent</button>`:'<span class="permanent-label">Permanent</span>'}${account.has_archive?`<button role="menuitem" data-action="export" data-id="${account.id}">Esporta archivio</button><button role="menuitem" data-action="clear" data-id="${account.id}" class="danger-text">Cancella archivio</button>`:''}<button role="menuitem" data-action="delete" data-id="${account.id}" class="danger-text">Elimina account</button></div></details></div>
+      <div class="card-top"><div class="account-avatar">${microsoft?'M':mbox?'B':esc(account.display_name.charAt(0).toUpperCase())}</div><div class="account-title"><h2>${esc(account.display_name)}</h2><p>${esc(account.email)}${providerLabel}</p></div>
+      <details class="menu" data-account-menu="${account.id}" ${state.openAccountMenuId===account.id?'open':''}><summary aria-label="Azioni account ${esc(account.display_name)}" aria-haspopup="menu" aria-expanded="${state.openAccountMenuId===account.id?'true':'false'}">${icon('dots')}</summary><div role="menu">${microsoft||mbox?'':`<button role="menuitem" data-action="edit" data-id="${account.id}">Modifica IMAP</button>`}${account.imap_enabled?`<button role="menuitem" data-action="test-saved" data-id="${account.id}">Test connessione</button>`:''}${microsoft?`<button role="menuitem" data-action="disconnect-microsoft" data-id="${account.id}" class="danger-text">Scollega Microsoft</button>`:''}${!account.is_permanent?`<button role="menuitem" data-action="permanent" data-id="${account.id}">Make permanent</button>`:'<span class="permanent-label">Permanent</span>'}${account.has_archive?`<button role="menuitem" data-action="export" data-id="${account.id}">Esporta archivio</button><button role="menuitem" data-action="clear" data-id="${account.id}" class="danger-text">Cancella archivio</button>`:''}<button role="menuitem" data-action="delete" data-id="${account.id}" class="danger-text">Elimina account</button></div></details></div>
       <div class="card-stats"><div><strong>${account.message_count.toLocaleString('it-IT')}</strong><span>messaggi</span></div><div><strong>${bytes(account.archive_size)}</strong><span>archivio</span></div></div>
       <div class="last-backup"><span class="status-dot ${esc(account.last_backup_status)}"></span><div><strong>${esc(statusLabel(account.last_backup_status))}</strong><small>${date(account.last_backup_at)}${account.next_backup_at ? ` · Prossimo ${date(account.next_backup_at)}` : ''}</small></div></div>
       ${account.last_backup_error ? `<p class="card-error" title="${esc(account.last_backup_error)}">${esc(account.last_backup_error)}</p>` : ''}${progress}
@@ -147,7 +149,25 @@ $('#account-grid').addEventListener('toggle', event => {
 
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && state.openAccountMenuId !== null) { event.preventDefault(); closeAccountMenus({restoreFocus:true}); } });
 $('#microsoft-connect')?.addEventListener('click', () => { location.href = '/api/auth/microsoft/start'; });
-function syncMicrosoftOAuthBox() { $('#microsoft-oauth-box')?.classList.toggle('hidden', $('#provider-preset')?.value !== 'outlook'); }
+function syncMicrosoftOAuthBox() {
+  const microsoft = $('#provider-preset')?.value === 'outlook';
+  $('#microsoft-oauth-box')?.classList.toggle('hidden', !microsoft);
+  $$('.imap-field').forEach(node => {
+    node.classList.toggle('hidden', microsoft);
+    $$('input,select,textarea', node).forEach(field => {
+      field.disabled = microsoft;
+      if (field.name !== 'password') field.required = !microsoft;
+    });
+  });
+  $('.advanced-settings')?.classList.toggle('hidden', microsoft);
+  $('#test-connection')?.classList.toggle('hidden', microsoft);
+  $('#save-account')?.classList.toggle('hidden', microsoft);
+  const status = $('#account-form-status');
+  if (microsoft && status) {
+    status.className = 'form-status';
+    status.textContent = 'Per Microsoft usa OAuth: nessuna password viene salvata in EMBOXA.';
+  }
+}
 
 function accountPayload(form) {
   const data = Object.fromEntries(new FormData(form));
@@ -192,25 +212,10 @@ function exportProgress(status, percent = 0, detail = '') {
   $('#export-progress-bar').style.width = `${Math.max(0, Math.min(100, Math.round(percent)))}%`;
   $('#export-detail').textContent = detail;
 }
-function saveBlobDownload(blob, filename) {
-  const url = URL.createObjectURL(blob);
+function triggerBrowserDownload(url, filename) {
   const link = document.createElement('a');
   link.href = url; link.download = filename; link.rel = 'noopener'; link.style.display = 'none';
   document.body.append(link); link.click(); link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 5000);
-}
-async function responseToBlobWithProgress(response, fallbackSize = 0) {
-  const total = Number(response.headers.get('content-length') || fallbackSize || 0);
-  if (!response.body) return response.blob();
-  const reader = response.body.getReader(), chunks = [];
-  let received = 0;
-  while (true) {
-    const {done, value} = await reader.read();
-    if (done) break;
-    chunks.push(value); received += value.byteLength;
-    exportProgress('Download nel browser…', total ? received / total * 100 : 55, total ? `${bytes(received)} / ${bytes(total)}` : `${bytes(received)} scaricati`);
-  }
-  return new Blob(chunks, {type: response.headers.get('content-type') || 'application/vnd.mailvault+zip'});
 }
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function waitForExportJob(job) {
@@ -237,16 +242,12 @@ async function exportArchive(accountId) {
     const info = await waitForExportJob(job);
     exportStep('prepare', 'done');
     $('#export-summary').textContent = `${info.filename} · ${bytes(info.size)}`;
-    exportProgress('Export locale pronto', 28, info.persistent ? 'Conservazione server: senza scadenza.' : `Conservazione server fino a ${date(info.expires_at)}.`);
+    exportProgress('Export locale pronto', 72, info.persistent ? 'Conservazione server: senza scadenza.' : `Conservazione server fino a ${date(info.expires_at)}.`);
     exportStep('browser');
-    const response = await fetch(info.download_url, {credentials:'same-origin'});
-    if (response.status === 401) { location.href = '/login'; throw new Error('Sessione scaduta'); }
-    if (!response.ok) throw new Error(`Download non disponibile (${response.status})`);
-    const blob = await responseToBlobWithProgress(response, info.size);
     exportStep('browser', 'done');
     exportStep('save');
-    exportProgress('Salvataggio sul PC…', 96, 'Il browser sta ricevendo il file effettivo. Il link locale temporaneo viene revocato dopo pochi secondi.');
-    saveBlobDownload(blob, info.filename);
+    exportProgress('Download avviato dal browser…', 96, 'Il file viene scaricato direttamente dal browser, senza caricarlo tutto in memoria.');
+    triggerBrowserDownload(info.download_url, info.filename);
     exportStep('save', 'done');
     exportProgress('Export completato', 100, 'Download avviato. Il file .mailvault resta nella cartella download scelta dal browser.');
     toast('Export completato');
@@ -283,6 +284,11 @@ document.addEventListener('click', async event => {
 $('#account-form').addEventListener('submit', async event => {
   event.preventDefault();
   const form=event.currentTarget, id=form.account_id.value, status=$('#account-form-status');
+  if ($('#provider-preset')?.value === 'outlook') {
+    status.className = 'form-status';
+    status.textContent = 'Per Microsoft usa il pulsante Continua: l’account viene creato tramite OAuth.';
+    return;
+  }
   status.className='form-status'; status.textContent='Salvataggio in corso…';
   try { await api(id?`/api/accounts/${id}`:'/api/accounts',{method:id?'PUT':'POST',body:JSON.stringify(accountPayload(form))}); $('#account-dialog').close(); toast('Account salvato'); loadAccounts(); }
   catch(error){status.textContent=error.message;status.className='form-status error';}
@@ -476,6 +482,42 @@ $('#sidebar-collapse').addEventListener('click',()=>{document.body.classList.tog
 
 $('#import-button').addEventListener('click',()=>$('#import-input').click());
 $('#import-input').addEventListener('change',async event=>{const file=event.target.files[0];if(!file)return;const data=new FormData();data.append('file',file);toast('Verifica e importazione in corso…');try{await api('/api/import',{method:'POST',body:data});toast('Archivio importato');loadAccounts();}catch(error){toast(error.message,'error');}finally{event.target.value='';}});
+function mboxImportProgress(status, percent = 0, detail = '') {
+  $('#mbox-import-status').textContent = status;
+  $('#mbox-import-percent').textContent = `${Math.max(0, Math.min(100, Math.round(percent)))}%`;
+  $('#mbox-import-progress-bar').style.width = `${Math.max(0, Math.min(100, Math.round(percent)))}%`;
+  $('#mbox-import-detail').textContent = detail;
+}
+async function waitForMboxImportJob(job) {
+  let current = job;
+  while (current.status === 'queued' || current.status === 'running') {
+    mboxImportProgress(current.status === 'queued' ? 'Import MBOX in coda…' : 'Import MBOX in corso…', current.percent || 10, current.detail || 'Parsing dei file MBOX in background.');
+    await wait(1500);
+    current = await api(current.status_url);
+  }
+  if (current.status === 'failed') throw new Error(current.error || current.detail || 'Import MBOX non riuscito');
+  return current.account;
+}
+$('#mbox-import-button').addEventListener('click',()=>$('#mbox-import-input').click());
+$('#mbox-import-input').addEventListener('change',async event=>{
+  const files=[...event.target.files]; if(!files.length)return;
+  const defaultName=files[0].webkitRelativePath?.split('/')[0]||files[0].name?.replace(/\.mbox$/i,'')||'Archivio MBOX importato';
+  const displayName=(prompt('Nome da mostrare per questo account MBOX offline', defaultName)||defaultName).trim();
+  const data=new FormData(); data.append('display_name',displayName); data.append('email','mbox-import@local.invalid');
+  files.forEach(file=>data.append('files',file,file.webkitRelativePath||file.name));
+  const dialog=$('#mbox-import-dialog'); $('#mbox-import-close').disabled=true; $('#mbox-import-done').disabled=true;
+  $('#mbox-import-summary').textContent=`${files.length} file selezionati · account offline senza sincronizzazione.`;
+  mboxImportProgress('Upload MBOX…',5,'Carico i file sul server, poi l’import continua in background.');
+  dialog.showModal();
+  try{
+    const job=await api('/api/import/mbox',{method:'POST',body:data});
+    const account=await waitForMboxImportJob(job);
+    mboxImportProgress('Import MBOX completato',100,`${account?.message_count?.toLocaleString('it-IT')||0} messaggi importati. Ora puoi aprire l’archivio come una mailbox.`);
+    toast('Import MBOX completato');
+    loadAccounts();
+  }catch(error){mboxImportProgress('Import MBOX non completato',0,error.message);toast(error.message,'error');}
+  finally{$('#mbox-import-close').disabled=false;$('#mbox-import-done').disabled=false;event.target.value='';}
+});
 $('#logout-button').addEventListener('click',async()=>{await api('/api/logout',{method:'POST'});location.href='/login';});
 
 const themeMedia = matchMedia('(prefers-color-scheme: dark)');

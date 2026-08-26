@@ -9,13 +9,16 @@ from app.database import SessionLocal
 from app.mail_parser import parse_and_store
 from app.main import list_messages
 from app.migrations import run_migrations
-from app.models import Account, Attachment, Folder, Message, Snapshot, utcnow
+from app.models import Account, Attachment, Folder, Message, Snapshot, User, utcnow
+from app.security import hash_password
 
 
 def test_mailvault_export_import_roundtrip():
     run_migrations()
     with SessionLocal() as db:
-        account = Account(archive_uuid="11111111-1111-1111-1111-111111111111", display_name="Roundtrip", email="box@example.com", imap_enabled=False)
+        user = User(username="roundtrip@example.com", email="roundtrip@example.com", password_hash=hash_password("password"), verified_at=utcnow(), plan="PLUS")
+        db.add(user); db.flush()
+        account = Account(owner_id=user.id, archive_uuid="11111111-1111-1111-1111-111111111111", display_name="Roundtrip", email="box@example.com", imap_enabled=False, mailbox_identity="roundtrip")
         db.add(account); db.flush()
         snapshot = Snapshot(account_id=account.id, snapshot_uuid="22222222-2222-2222-2222-222222222222", status="active", completed_at=utcnow())
         db.add(snapshot); db.flush()
@@ -28,13 +31,13 @@ def test_mailvault_export_import_roundtrip():
         db.add(item); db.flush()
         for part in parsed.attachments: db.add(Attachment(message_id=item.id, filename=part.filename, content_type=part.content_type, size=part.size, sha256=part.sha256, relpath=part.relpath, content_id=part.content_id, is_inline=part.is_inline))
         db.execute(text("INSERT INTO message_fts(message_id,snapshot_id,subject,sender,recipients,body) VALUES (:m,:s,:a,:b,:c,:d)"),{"m":item.id,"s":snapshot.id,"a":item.subject,"b":item.sender,"c":item.recipients_to,"d":item.text_body})
-        snapshot.message_count=1; snapshot.archive_size=sum(p.stat().st_size for p in root.rglob('*') if p.is_file()); account.active_snapshot_id=snapshot.id; account.message_count=1; account.archive_size=snapshot.archive_size; db.commit(); account_id=account.id
+        snapshot.message_count=1; snapshot.archive_size=sum(p.stat().st_size for p in root.rglob('*') if p.is_file()); account.active_snapshot_id=snapshot.id; account.message_count=1; account.archive_size=snapshot.archive_size; db.commit(); account_id=account.id; owner_id=user.id
 
     export_path, _name = build_export(account_id)
     manifest, checksums = validate_archive(export_path)
     assert manifest["format_version"] == 1
     assert checksums
-    imported_id = import_archive(export_path)
+    imported_id = import_archive(export_path, owner_id)
     with SessionLocal() as db:
         imported = db.get(Account, imported_id)
         assert imported.imap_enabled is False
