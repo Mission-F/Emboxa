@@ -106,7 +106,7 @@ def run_migrations() -> None:
         additions = {
             "users": [("email", "VARCHAR(320)"), ("verified_at", "DATETIME"), ("role", "VARCHAR(20) NOT NULL DEFAULT 'user'"),
                       ("plan", "VARCHAR(20) NOT NULL DEFAULT 'STANDARD'"),
-                      ("storage_limit_bytes", "BIGINT NOT NULL DEFAULT 16106127360"),
+                      ("storage_limit_bytes", "BIGINT NOT NULL DEFAULT 5368709120"),
                       ("status", "VARCHAR(20) NOT NULL DEFAULT 'active'"), ("last_login_at", "DATETIME")],
             "accounts": [("owner_id", "INTEGER"), ("mailbox_identity", "VARCHAR(64)"),
                          ("is_permanent", "BOOLEAN NOT NULL DEFAULT 0"), ("permanent_since", "DATETIME"),

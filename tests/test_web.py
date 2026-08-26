@@ -191,14 +191,14 @@ def test_web_multitenant_plans_retention_cleanup_telegram_and_public(monkeypatch
         headers = csrf(client)
 
         account_ids = []
-        for index in range(5):
+        for index in range(2):
             payload = {**MAILBOX, "display_name": f"Mailbox {index}", "email": f"mail{index}@example.com",
                        "imap_username": f"mail{index}@example.com"}
             response = client.post("/api/accounts", json=payload, headers=headers)
             assert response.status_code == 200, response.text
             account_ids.append(response.json()["id"])
-        sixth = client.post("/api/accounts", json={**MAILBOX, "email": "six@example.com"}, headers=headers)
-        assert sixth.status_code == 409 and "Mailbox limit" in sixth.text
+        third = client.post("/api/accounts", json={**MAILBOX, "email": "third@example.com"}, headers=headers)
+        assert third.status_code == 409 and "Mailbox limit" in third.text
 
         assert client.post(f"/api/accounts/{account_ids[0]}/permanent", headers=headers).status_code == 200
         locked = client.post(f"/api/accounts/{account_ids[1]}/permanent", headers=headers)

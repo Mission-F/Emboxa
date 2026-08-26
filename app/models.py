@@ -24,7 +24,7 @@ class User(Base):
     verified_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     role: Mapped[str] = mapped_column(String(20), default="user", index=True)
     plan: Mapped[str] = mapped_column(String(20), default="STANDARD", index=True)
-    storage_limit_bytes: Mapped[int] = mapped_column(BigInteger, default=15 * 1024**3)
+    storage_limit_bytes: Mapped[int] = mapped_column(BigInteger, default=5 * 1024**3)
     status: Mapped[str] = mapped_column(String(20), default="active", index=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

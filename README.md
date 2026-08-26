@@ -37,6 +37,8 @@
 - Uses IMAP Transfer to restore original RFC822 messages to Gmail, Outlook, Yahoo, iCloud or custom IMAP destinations, with folder preservation, duplicate checks, progress and cancellation.
 - Runs as a multi-architecture container on Docker-compatible servers and TrueNAS Community.
 
+Free Standard accounts include **5 GB of storage and up to 2 mailboxes per user**. Administrators can change limits from the runtime settings panel; PLUS users are unlimited.
+
 ## Quick Start
 
 ### TrueNAS Community

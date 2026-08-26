@@ -58,7 +58,7 @@ async function loadUsers() {
     <div><b>${esc(user.plan)}</b><span>${user.mailbox_count} ${t('mailboxes')} · ${bytes(user.storage_used)} / ${user.storage_limit == null ? t('unlimited') : bytes(user.storage_limit)}</span></div>
     <label><span>${t('plan')}</span><select data-field="plan"><option ${user.plan === 'STANDARD' ? 'selected' : ''}>STANDARD</option><option ${user.plan === 'PLUS' ? 'selected' : ''}>PLUS</option></select></label>
     <label><span>${t('status')}</span><select data-field="status"><option ${user.status === 'active' ? 'selected' : ''}>active</option><option ${user.status === 'suspended' ? 'selected' : ''}>suspended</option></select></label>
-    <label><span>${t('quotaBytes')}</span><input data-field="quota" type="number" min="1" value="${user.storage_limit || 16106127360}"></label>
+    <label><span>${t('quotaBytes')}</span><input data-field="quota" type="number" min="1" value="${user.storage_limit || 5368709120}"></label>
     <div class="admin-user-actions"><button class="secondary" type="button" data-save>${t('save')}</button><button class="danger" type="button" data-delete-user data-email="${esc(user.email)}">Delete user</button></div>
   </article>`).join('') || `<p class="empty-admin">${t('noUsers')}</p>`;
 }
