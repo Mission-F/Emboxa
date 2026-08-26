@@ -449,8 +449,8 @@ function extensionColor(label) {
   return palette[hash];
 }
 function attachmentPreview(item){
-  const label = extensionLabel(item);
-  return `<div class="file-tile extension-tile"><b>${esc(label)}</b></div>`;
+  const label = extensionLabel(item), color = extensionColor(label);
+  return `<div class="file-tile extension-tile" style="--file-color:${color};background:${color}"><b>${esc(label)}</b></div>`;
 }
 function attachmentCard(item) {
   const label = extensionLabel(item), color = extensionColor(label);
@@ -587,16 +587,65 @@ async function waitForArchiveImportJob(job) {
   if (current.status === 'failed') throw new Error(current.error || current.detail || 'Import non riuscito');
   return current;
 }
-function closeImportChoice(){ $('#import-choice')?.classList.add('hidden'); }
-$('#import-button').addEventListener('click',event=>{event.stopPropagation();$('#import-choice')?.classList.toggle('hidden');});
-$('#import-choice')?.addEventListener('click',async event=>{
-  const button=event.target.closest('[data-import-choice]'); if(!button)return;
-  closeImportChoice();
-  if(button.dataset.importChoice==='upload')return $('#import-input').click();
-  if(button.dataset.importChoice==='link')return importArchiveFromLink();
-  if(button.dataset.importChoice==='local')return importArchiveFromNas();
+function ioCard(action, svg, title, copy) {
+  return `<button class="io-card" type="button" data-io="${action}">${svg}<b>${esc(title)}</b><small>${esc(copy)}</small></button>`;
+}
+function setIO(title, subtitle, html) {
+  $('#io-title').textContent = title;
+  $('#io-subtitle').textContent = subtitle;
+  $('#io-content').innerHTML = html;
+}
+function renderIOMain() {
+  setIO('Import / Export', 'Scegli se portare dentro un archivio o salvarne uno fuori.', `<div class="io-grid">
+    ${ioCard('import-mailvault', icon('upload'), 'Import .mailvault', 'Upload, link diretto o cartella locale della NAS.')}
+    ${ioCard('import-mbox', icon('mail'), 'Import MBOX', 'Crea una casella offline da file MBOX.')}
+    ${ioCard('export-start', icon('archive'), 'Export archivio', 'Scegli la casella e poi browser o cartella NAS.')}
+  </div>`);
+}
+function renderMailvaultImportMethods() {
+  setIO('Import .mailvault', 'Scegli da dove prendere il pacchetto.', `<button class="ghost io-back" type="button" data-io="back">← Indietro</button><div class="io-grid">
+    ${ioCard('mailvault-upload', icon('upload'), 'Upload', 'Scegli un file .mailvault dal PC, con barra e velocità.')}
+    ${ioCard('mailvault-link', icon('link'), 'Link', 'Il server scarica il .mailvault direttamente dal link.')}
+    ${ioCard('mailvault-local', icon('server'), 'Cartella NAS', 'Importa i .mailvault già copiati in /data/local-imports.')}
+  </div>`);
+}
+function renderMboxImportMethods() {
+  setIO('Import MBOX', 'Scegli come importare file MBOX come account offline.', `<button class="ghost io-back" type="button" data-io="back">← Indietro</button><div class="io-grid">
+    ${ioCard('mbox-upload', icon('upload'), 'Upload cartella/file', 'Seleziona MBOX dal PC.')}
+    ${ioCard('mbox-local', icon('server'), 'Cartella NAS', 'Importa MBOX già copiati in /data/local-imports.')}
+  </div>`);
+}
+function renderExportAccounts() {
+  const accounts = state.accounts.filter(account => account.has_archive);
+  setIO('Export archivio', 'Scegli quale casella esportare.', `<button class="ghost io-back" type="button" data-io="back">← Indietro</button><div class="io-grid">${
+    accounts.length ? accounts.map(account => ioCard(`export-account:${account.id}`, icon('archive'), account.display_name, `${account.email} · ${bytes(account.archive_size)}`)).join('') : '<p class="muted">Nessun archivio esportabile.</p>'
+  }</div>`);
+}
+function renderExportMethods(accountId) {
+  const account = state.accounts.find(item => item.id === accountId);
+  setIO('Export archivio', account ? `${account.display_name} · ${account.email}` : 'Scegli destinazione', `<button class="ghost io-back" type="button" data-io="export-start">← Caselle</button><div class="io-grid">
+    ${ioCard(`export-browser:${accountId}`, icon('upload'), 'Download browser', 'Crea il .mailvault e lo scarica sul PC.')}
+    ${ioCard(`export-nas:${accountId}`, icon('server'), 'Cartella NAS', 'Salva il .mailvault in /data/local-exports.')}
+  </div>`);
+}
+$('#import-export-button').addEventListener('click',()=>{renderIOMain();$('#io-dialog').showModal();$('.main-sidebar').classList.remove('open');});
+$('#io-content').addEventListener('click',event=>{
+  const button=event.target.closest('[data-io]'); if(!button)return;
+  const action=button.dataset.io;
+  if(action==='back')return renderIOMain();
+  if(action==='import-mailvault')return renderMailvaultImportMethods();
+  if(action==='import-mbox')return renderMboxImportMethods();
+  if(action==='export-start')return renderExportAccounts();
+  if(action.startsWith('export-account:'))return renderExportMethods(Number(action.split(':')[1]));
+  $('#io-dialog').close();
+  if(action==='mailvault-upload')return $('#import-input').click();
+  if(action==='mailvault-link')return importArchiveFromLink();
+  if(action==='mailvault-local')return importArchiveFromNas('mailvault');
+  if(action==='mbox-upload')return $('#mbox-import-input').click();
+  if(action==='mbox-local')return importArchiveFromNas('mbox');
+  if(action.startsWith('export-browser:'))return exportArchive(Number(action.split(':')[1]));
+  if(action.startsWith('export-nas:'))return exportArchiveToNas(Number(action.split(':')[1]));
 });
-document.addEventListener('click',event=>{if(!event.target.closest('#import-choice,#import-button'))closeImportChoice();});
 $('#import-input').addEventListener('change',async event=>{
   const file=event.target.files[0];if(!file)return;
   const data=new FormData();data.append('file',file);
@@ -629,8 +678,7 @@ async function importArchiveFromLink(){
   }catch(error){importProgress('Import non completato',0,error.message);toast(error.message,'error');}
   finally{$('#import-close').disabled=false;$('#import-done').disabled=false;}
 }
-async function importArchiveFromNas(){
-  const mode=(prompt('Cosa importare dalla cartella NAS? Scrivi: auto, mailvault oppure mbox','auto')||'auto').trim().toLowerCase();
+async function importArchiveFromNas(mode='auto'){
   if(!['auto','mailvault','mbox'].includes(mode))return toast('Scelta non valida: usa auto, mailvault oppure mbox','error');
   const dialog=$('#import-dialog');$('#import-close').disabled=true;$('#import-done').disabled=true;
   $('#import-summary').textContent='Import da cartella NAS · legge i file già presenti in /data/local-imports.';
@@ -682,7 +730,7 @@ function uploadMboxFormData(data, onProgress) {
     xhr.send(data);
   });
 }
-$('#mbox-import-button').addEventListener('click',()=>$('#mbox-import-input').click());
+$('#mbox-import-button')?.addEventListener('click',()=>$('#mbox-import-input').click());
 $('#mbox-import-input').addEventListener('change',async event=>{
   const files=[...event.target.files]; if(!files.length)return;
   const defaultName=files[0].webkitRelativePath?.split('/')[0]||files[0].name?.replace(/\.mbox$/i,'')||'Archivio MBOX importato';

@@ -42,6 +42,13 @@ def account_active_archive_size(db: Session, account: Account) -> int:
     return snapshot_disk_size(account, snapshot)
 
 
+def account_storage_used(db: Session, account: Account) -> int:
+    snapshots = db.scalars(
+        select(Snapshot).where(Snapshot.account_id == account.id, Snapshot.status.in_(["completed", "active"]))
+    ).all()
+    return int(sum(snapshot_disk_size(account, snapshot) for snapshot in snapshots))
+
+
 def user_storage_used(db: Session, user_id: int) -> int:
     rows = db.execute(
         select(Account, Snapshot)

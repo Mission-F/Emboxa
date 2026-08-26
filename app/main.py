@@ -72,7 +72,7 @@ from .models import (
 )
 from .scheduler import scheduler
 from .settings_service import get_bool_setting, get_float_setting, get_int_setting, get_setting, save_setting
-from .storage import account_active_archive_size, snapshot_disk_size, total_archive_storage_used, user_storage_used
+from .storage import account_active_archive_size, account_storage_used, snapshot_disk_size, total_archive_storage_used, user_storage_used
 from .security import (
     clear_login_failures,
     csrf_matches,
@@ -1507,7 +1507,7 @@ def _account_json(account: Account, job: BackupJob | None = None, db: Session | 
         "last_backup_status": account.last_backup_status,
         "last_backup_error": account.last_backup_error,
         "message_count": account.message_count,
-        "archive_size": account_active_archive_size(db, account) if db else account.archive_size,
+        "archive_size": account_storage_used(db, account) if db else account.archive_size,
         "retention_versions": account.retention_versions,
         "is_permanent": account.is_permanent,
         "permanent_locked_until": account.permanent_locked_until,
@@ -2209,7 +2209,7 @@ def _run_export_local_job(job_id: str, user_id: int, account_id: int) -> None:
                 stem, suffix = destination.stem, destination.suffix
                 destination = LOCAL_EXPORTS_DIR / f"{stem}-{utcnow().strftime('%Y%m%d-%H%M%S')}{suffix}"
             _set_export_job(job_id, percent=88, detail="Copia del file nella cartella locale NAS…")
-            shutil.copy2(source, destination)
+            shutil.copyfile(source, destination)
             _set_export_job(
                 job_id,
                 status="completed",
