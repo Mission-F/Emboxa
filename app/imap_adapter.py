@@ -28,7 +28,7 @@ class RemoteFolder:
 
 @dataclass(slots=True)
 class RemoteMessage:
-    uid: int
+    uid: int | str
     raw: bytes
     flags: list[str]
     internal_date: datetime | None

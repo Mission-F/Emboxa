@@ -74,7 +74,7 @@ function toast(message, kind = '') {
 }
 function bytes(value = 0) { const units=['B','KB','MB','GB','TB']; let i=0,n=Number(value); while(n>=1024&&i<4){n/=1024;i++;} return `${n.toFixed(i ? 1 : 0)} ${units[i]}`; }
 function date(value) { return value ? new Intl.DateTimeFormat('it-IT',{dateStyle:'medium',timeStyle:'short'}).format(new Date(value)) : 'Mai'; }
-function statusLabel(value) { return ({never:'Mai eseguito',running:'Backup in corso',completed:'Backup completato',failed:'Backup non riuscito',cancelled:'Backup interrotto',imported:'Archivio importato',cleared:'Archivio cancellato'})[value] || value; }
+function statusLabel(value) { return ({never:'Mai eseguito',running:'Backup in corso',completed:'Backup completato',failed:'Backup non riuscito',cancelled:'Backup interrotto',imported:'Archivio importato',cleared:'Archivio cancellato',disconnected:'Account scollegato'})[value] || value; }
 function duration(seconds) { if (seconds == null) return 'Stima in corso…'; const n=Math.max(0,Number(seconds)); if(n<60)return `~${Math.max(1,Math.round(n/5)*5)} sec`;if(n<3600)return `~${Math.round(n/60)} min`;const h=Math.floor(n/3600),m=Math.round((n%3600)/300)*5;return `~${h} h${m?` ${m} min`:''}`; }
 function emptyReader() { return `<div class="reader-empty"><span>${icon('mail')}</span><p>Seleziona un messaggio per leggerlo</p></div>`; }
 function skeleton(count = 6) { return `<div class="skeleton-list">${Array.from({length: count}, () => '<div class="skeleton-row"></div>').join('')}</div>`; }
@@ -97,10 +97,11 @@ async function loadAccounts(quiet = false) {
 
 function accountCard(account) {
   const job = account.job;
+  const microsoft = account.auth_provider === 'microsoft';
   const progress = job ? `<div class="job"><div><span>${esc(job.current_folder || statusLabel(job.status))}</span><strong>${job.status==='queued'?'In coda':`${job.percent}%`}</strong></div><div class="progress"><i style="width:${job.percent}%"></i></div><small>${job.processed_messages.toLocaleString('it-IT')} / ${job.total_messages ? job.total_messages.toLocaleString('it-IT') : '?'} messaggi · ${job.attachment_count.toLocaleString('it-IT')} allegati${job.status==='running'?` · ${job.throughput.toFixed(1)} msg/s · ETA ${duration(job.eta_seconds)}`:''}</small><button data-action="cancel" data-id="${job.id}" class="text-button danger-text">Interrompi</button></div>` : '';
   return `<article class="account-card" data-account-card="${account.id}">
-      <div class="card-top"><div class="account-avatar">${esc(account.display_name.charAt(0).toUpperCase())}</div><div class="account-title"><h2>${esc(account.display_name)}</h2><p>${esc(account.email)}</p></div>
-      <details class="menu" data-account-menu="${account.id}" ${state.openAccountMenuId===account.id?'open':''}><summary aria-label="Azioni account ${esc(account.display_name)}" aria-haspopup="menu" aria-expanded="${state.openAccountMenuId===account.id?'true':'false'}">${icon('dots')}</summary><div role="menu"><button role="menuitem" data-action="edit" data-id="${account.id}">Modifica IMAP</button>${account.imap_enabled?`<button role="menuitem" data-action="test-saved" data-id="${account.id}">Test connessione</button>`:''}${!account.is_permanent?`<button role="menuitem" data-action="permanent" data-id="${account.id}">Make permanent</button>`:'<span class="permanent-label">Permanent</span>'}${account.has_archive?`<button role="menuitem" data-action="export" data-id="${account.id}">Esporta archivio</button><button role="menuitem" data-action="clear" data-id="${account.id}" class="danger-text">Cancella archivio</button>`:''}<button role="menuitem" data-action="delete" data-id="${account.id}" class="danger-text">Elimina account</button></div></details></div>
+      <div class="card-top"><div class="account-avatar">${microsoft?'M':esc(account.display_name.charAt(0).toUpperCase())}</div><div class="account-title"><h2>${esc(account.display_name)}</h2><p>${esc(account.email)}${microsoft?' · Microsoft Graph':''}</p></div>
+      <details class="menu" data-account-menu="${account.id}" ${state.openAccountMenuId===account.id?'open':''}><summary aria-label="Azioni account ${esc(account.display_name)}" aria-haspopup="menu" aria-expanded="${state.openAccountMenuId===account.id?'true':'false'}">${icon('dots')}</summary><div role="menu">${microsoft?'':`<button role="menuitem" data-action="edit" data-id="${account.id}">Modifica IMAP</button>`}${account.imap_enabled?`<button role="menuitem" data-action="test-saved" data-id="${account.id}">Test connessione</button>`:''}${microsoft?`<button role="menuitem" data-action="disconnect-microsoft" data-id="${account.id}" class="danger-text">Scollega Microsoft</button>`:''}${!account.is_permanent?`<button role="menuitem" data-action="permanent" data-id="${account.id}">Make permanent</button>`:'<span class="permanent-label">Permanent</span>'}${account.has_archive?`<button role="menuitem" data-action="export" data-id="${account.id}">Esporta archivio</button><button role="menuitem" data-action="clear" data-id="${account.id}" class="danger-text">Cancella archivio</button>`:''}<button role="menuitem" data-action="delete" data-id="${account.id}" class="danger-text">Elimina account</button></div></details></div>
       <div class="card-stats"><div><strong>${account.message_count.toLocaleString('it-IT')}</strong><span>messaggi</span></div><div><strong>${bytes(account.archive_size)}</strong><span>archivio</span></div></div>
       <div class="last-backup"><span class="status-dot ${esc(account.last_backup_status)}"></span><div><strong>${esc(statusLabel(account.last_backup_status))}</strong><small>${date(account.last_backup_at)}${account.next_backup_at ? ` · Prossimo ${date(account.next_backup_at)}` : ''}</small></div></div>
       ${account.last_backup_error ? `<p class="card-error" title="${esc(account.last_backup_error)}">${esc(account.last_backup_error)}</p>` : ''}${progress}
@@ -145,6 +146,7 @@ $('#account-grid').addEventListener('toggle', event => {
 }, true);
 
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && state.openAccountMenuId !== null) { event.preventDefault(); closeAccountMenus({restoreFocus:true}); } });
+$('#microsoft-connect')?.addEventListener('click', () => { location.href = '/api/auth/microsoft/start'; });
 
 function accountPayload(form) {
   const data = Object.fromEntries(new FormData(form));
@@ -266,6 +268,7 @@ document.addEventListener('click', async event => {
     if (button.dataset.action === 'backup') { const result=await api(`/api/accounts/${id}/backup`, {method:'POST'}); toast(result.created?'Backup aggiunto alla coda':'Backup già in coda'); loadAccounts(true); }
     if (button.dataset.action === 'cancel' && await confirmAction('Interrompere il backup?', 'Lo staging incompleto sarà eliminato. Il backup precedente resterà disponibile.')) { await api(`/api/jobs/${id}/cancel`, {method:'POST'}); toast('Interruzione richiesta'); }
     if (button.dataset.action === 'test-saved') { button.disabled=true; const result=await api(`/api/accounts/${id}/test`,{method:'POST'}); toast(`Connessione riuscita · ${result.folders} cartelle`); button.disabled=false; }
+    if (button.dataset.action === 'disconnect-microsoft' && await confirmAction('Scollegare Microsoft?', 'I backup futuri si fermeranno finché non ricolleghi l’account con OAuth. Gli archivi già creati restano disponibili.')) { await api(`/api/accounts/${id}/microsoft`,{method:'DELETE'}); toast('Microsoft scollegato'); loadAccounts(); }
     if (button.dataset.action === 'open') await openArchive(account);
     if (button.dataset.action === 'transfer') await openTransfer(id);
     if (button.dataset.action === 'export') await exportArchive(id);
@@ -509,4 +512,7 @@ $('#settings-language').addEventListener('change',event=>setLocale(event.target.
 async function initExperience(){preferences=await api('/api/preferences');localize();if(!preferences.tutorial_completed)$('#welcome-dialog').showModal();}
 
 loadAccounts();initExperience();
+const microsoftResult = new URLSearchParams(location.search).get('microsoft');
+if (microsoftResult === 'connected') { toast('Account Microsoft collegato'); history.replaceState({}, '', '/app'); }
+if (microsoftResult === 'error') { toast(new URLSearchParams(location.search).get('reason') || 'Microsoft OAuth non riuscito', 'error'); history.replaceState({}, '', '/app'); }
 state.polling=setInterval(()=>{loadActivity(true);loadAccounts(true);},2500);

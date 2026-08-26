@@ -14,10 +14,11 @@ from sqlalchemy import func, select, text
 
 from .config import ARCHIVES_DIR, BACKUP_RETRIES, IMAP_FETCH_BATCH
 from .database import SessionLocal
+from .graph_adapter import MicrosoftGraphAdapter
 from .imap_adapter import StandardIMAPAdapter
 from .mail_parser import parse_and_store
 from .models import Account, Attachment, BackupJob, Folder, Message, Snapshot, User, utcnow
-from .security import decrypt_secret
+from .security import decrypt_secret, encrypt_secret
 from .settings_service import get_float_setting, get_int_setting
 
 log = logging.getLogger("emboxa.backup")
@@ -105,19 +106,22 @@ def _check_cancel(db, job: BackupJob) -> None:
         raise BackupCancelled("Backup interrotto dall'utente")
 
 
-def _connect(account: Account, password: str) -> StandardIMAPAdapter:
-    adapter = StandardIMAPAdapter(
-        account.imap_host or "",
-        int(account.imap_port or 993),
-        account.security,
-        account.imap_username or account.email,
-        password,
-    )
+def _connect(account: Account, password: str) -> StandardIMAPAdapter | MicrosoftGraphAdapter:
+    if account.auth_provider == "microsoft":
+        adapter = MicrosoftGraphAdapter(password)
+    else:
+        adapter = StandardIMAPAdapter(
+            account.imap_host or "",
+            int(account.imap_port or 993),
+            account.security,
+            account.imap_username or account.email,
+            password,
+        )
     adapter.connect()
     return adapter
 
 
-def _connect_with_retry(account: Account, password: str) -> StandardIMAPAdapter:
+def _connect_with_retry(account: Account, password: str) -> StandardIMAPAdapter | MicrosoftGraphAdapter:
     last_error = None
     for attempt in range(BACKUP_RETRIES):
         try:
@@ -131,7 +135,7 @@ def _connect_with_retry(account: Account, password: str) -> StandardIMAPAdapter:
 
 def run_backup(job_id: int) -> None:
     db = SessionLocal()
-    adapter: StandardIMAPAdapter | None = None
+    adapter: StandardIMAPAdapter | MicrosoftGraphAdapter | None = None
     stage_path: Path | None = None
     snapshot: Snapshot | None = None
     try:
@@ -164,6 +168,10 @@ def run_backup(job_id: int) -> None:
 
         password = decrypt_secret(account.encrypted_password)
         adapter = _connect_with_retry(account, password)
+        if account.auth_provider == "microsoft" and getattr(adapter, "refresh_token", password) != password:
+            password = adapter.refresh_token
+            account.encrypted_password = encrypt_secret(password)
+            db.commit()
         remote_folders = adapter.list_folders(account.root_folder)
         selectable = [folder for folder in remote_folders if "\\Noselect" not in folder.flags]
 

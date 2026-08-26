@@ -41,6 +41,7 @@ class Account(Base):
     imap_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
     imap_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
     security: Mapped[str] = mapped_column(String(20), default="ssl")
+    auth_provider: Mapped[str] = mapped_column(String(20), default="imap", index=True)
     imap_username: Mapped[str | None] = mapped_column(String(320), nullable=True)
     encrypted_password: Mapped[str | None] = mapped_column(Text, nullable=True)
     root_folder: Mapped[str | None] = mapped_column(String(500), nullable=True)

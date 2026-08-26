@@ -182,6 +182,15 @@ def run_migrations() -> None:
         with engine.begin() as conn:
             conn.execute(text("INSERT OR IGNORE INTO schema_migrations(version) VALUES (10)"))
 
+    if 11 not in applied:
+        log.info("Applying database migration 11 (OAuth mailbox providers)")
+        with engine.begin() as conn:
+            present = {column["name"] for column in inspect(conn).get_columns("accounts")}
+            if "auth_provider" not in present:
+                conn.execute(text("ALTER TABLE accounts ADD COLUMN auth_provider VARCHAR(20) NOT NULL DEFAULT 'imap'"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_accounts_auth_provider ON accounts(auth_provider)"))
+            conn.execute(text("INSERT OR IGNORE INTO schema_migrations(version) VALUES (11)"))
+
     # Fail clearly if the Python SQLite build unexpectedly lacks FTS5.
     with engine.connect() as conn:
         if "message_fts" not in inspect(conn).get_table_names():

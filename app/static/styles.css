@@ -274,6 +274,8 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .form-grid label, .auth-card label { display: flex; flex-direction: column; gap: 6px; color: var(--text-secondary); font-size: 11px; font-weight: 720; }
 .form-grid input, .form-grid select, .auth-card input { width: 100%; min-height: 42px; padding: 9px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); outline: 0; background: var(--surface-secondary); color: var(--text); }
+.oauth-connect { display: grid; gap: 7px; margin: 0 24px 16px; padding: 13px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-secondary); }
+.oauth-connect small { color: var(--text-secondary); font-size: 11px; }
 .form-grid input:focus, .form-grid select:focus, .auth-card input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(252, 163, 17, .13); }
 .form-grid small, .auth-card small { font-weight: 450; }
 .span-2 { grid-column: span 2; }

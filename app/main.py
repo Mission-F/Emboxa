@@ -56,11 +56,12 @@ from .config import (
     GITHUB_REPOSITORY_URL, GOOGLE_ANALYTICS_ID, LEGAL_ADDRESS, LEGAL_CONTACT_EMAIL, LEGAL_ENTITY_NAME, LEGAL_VAT_ID,
     LOG_LEVEL, PERMANENT_MAILBOX_LOCK_DAYS, PUBLIC_APP_URL, SMTP_FROM_EMAIL, SMTP_FROM_NAME,
     SMTP_HOST, SMTP_PASSWORD, SMTP_PORT, SMTP_SECURITY, SMTP_USERNAME, STANDARD_MAILBOX_LIMIT,
-    STANDARD_RETENTION_DAYS, STANDARD_STORAGE_LIMIT_BYTES, TELEGRAM_BOT_TOKEN,
+    STANDARD_RETENTION_DAYS, STANDARD_STORAGE_LIMIT_BYTES, TELEGRAM_BOT_TOKEN, MICROSOFT_CLIENT_ID,
     TELEGRAM_BOT_USERNAME, ensure_data_dirs,
 )
 from .database import SessionLocal, get_db
 from .email_templates import password_reset_email, test_email, verification_email
+from .graph_adapter import exchange_code, graph_json, microsoft_authorize_url, microsoft_profile, refresh_access_token
 from .imap_adapter import test_imap_connection
 from .imap_transfer import recover_interrupted_transfers, transfer_manager
 from .migrations import run_migrations
@@ -1508,6 +1509,7 @@ def _account_json(account: Account, job: BackupJob | None = None) -> dict:
         "id": account.id,
         "display_name": account.display_name,
         "email": account.email,
+        "auth_provider": account.auth_provider,
         "imap_host": account.imap_host,
         "imap_port": account.imap_port,
         "security": account.security,
@@ -1528,6 +1530,77 @@ def _account_json(account: Account, job: BackupJob | None = None) -> dict:
         "has_archive": bool(account.active_snapshot_id),
         "job": _job_json(job) if job else None,
     }
+
+
+def _microsoft_redirect_uri(db: Session | None = None) -> str:
+    return f"{get_setting('public_domain', PUBLIC_APP_URL, db).rstrip('/')}/api/auth/microsoft/callback"
+
+
+@app.get("/api/auth/microsoft/status")
+def microsoft_status(_user: User = Depends(current_user)):
+    return {"configured": bool(MICROSOFT_CLIENT_ID), "provider": "microsoft"}
+
+
+@app.get("/api/auth/microsoft/start")
+def microsoft_start(request: Request, _user: User = Depends(current_user), db: Session = Depends(get_db)):
+    state = secrets.token_urlsafe(32)
+    request.session["microsoft_oauth_state"] = state
+    return RedirectResponse(microsoft_authorize_url(_microsoft_redirect_uri(db), state), status_code=303)
+
+
+@app.get("/api/auth/microsoft/callback")
+def microsoft_callback(request: Request, code: str = "", state: str = "", error: str = "",
+                       error_description: str = "", db: Session = Depends(get_db)):
+    user_id = request.session.get("user_id")
+    expected = request.session.pop("microsoft_oauth_state", None)
+    if error:
+        return RedirectResponse(f"/app?microsoft=error&reason={quote(error_description or error)}", status_code=303)
+    if not user_id or not expected or not state or not secrets.compare_digest(expected, state):
+        return RedirectResponse("/login?microsoft=expired", status_code=303)
+    user = db.get(User, user_id)
+    if not user or user.status != "active" or not user.verified_at:
+        return RedirectResponse("/login?microsoft=account", status_code=303)
+    try:
+        token = exchange_code(code, _microsoft_redirect_uri(db))
+        access_token = token["access_token"]
+        refresh_token = token.get("refresh_token")
+        if not refresh_token:
+            raise HTTPException(400, "Microsoft did not return a refresh token")
+        profile = microsoft_profile(access_token)
+        email = (profile.get("mail") or profile.get("userPrincipalName") or "").strip().lower()
+        if not email:
+            raise HTTPException(400, "Microsoft account email unavailable")
+        mailbox_limit = get_int_setting("standard_mailbox_limit", STANDARD_MAILBOX_LIMIT, db)
+        existing = db.scalar(select(Account).where(
+            Account.owner_id == user.id,
+            Account.auth_provider == "microsoft",
+            Account.email == email,
+        ))
+        if not existing and user.plan != "PLUS" and (db.scalar(select(func.count(Account.id)).where(Account.owner_id == user.id)) or 0) >= mailbox_limit:
+            raise HTTPException(409, f"Mailbox limit reached. Standard accounts can connect up to {mailbox_limit} mailboxes.")
+        account = existing or Account(
+            owner_id=user.id,
+            archive_uuid=str(uuid.uuid4()),
+            display_name=profile.get("displayName") or email,
+            email=email,
+            mailbox_identity=hashlib.sha256(f"{user.id}:microsoft:{profile.get('id') or email}".encode()).hexdigest(),
+        )
+        account.auth_provider = "microsoft"
+        account.imap_host = "graph.microsoft.com"
+        account.imap_port = 443
+        account.security = "oauth2"
+        account.imap_username = email
+        account.encrypted_password = encrypt_secret(refresh_token)
+        account.imap_enabled = True
+        account.next_backup_at = next_backup_time(account)
+        db.add(account)
+        db.commit()
+        return RedirectResponse("/app?microsoft=connected", status_code=303)
+    except HTTPException as exc:
+        return RedirectResponse(f"/app?microsoft=error&reason={quote(str(exc.detail))}", status_code=303)
+    except Exception as exc:
+        log.warning("Microsoft OAuth callback failed: %s", exc)
+        return RedirectResponse("/app?microsoft=error&reason=Microsoft%20OAuth%20failed", status_code=303)
 
 
 def _job_json(job: BackupJob) -> dict:
@@ -1600,6 +1673,8 @@ def _destination_credentials(db: Session, user: User, destination: IMAPTransferD
         account = db.get(Account, destination.account_id)
         if not account or account.owner_id != user.id:
             raise HTTPException(404, "Destination mailbox not found")
+        if account.auth_provider != "imap":
+            raise HTTPException(409, "This destination does not support IMAP restore yet")
         if not account.imap_enabled or not account.encrypted_password:
             raise HTTPException(409, "Destination mailbox has no IMAP credentials")
         return {
@@ -1668,7 +1743,9 @@ def transfer_preview(
         "snapshot": {"id": snapshot.id, "messages": snapshot.message_count, "size": snapshot.archive_size},
         "folders": [{"id": folder.id, "name": folder.name, "messages": folder.message_count} for folder in folders],
         "destinations": [{"id": item.id, "display_name": item.display_name, "email": item.email}
-                         for item in db.scalars(select(Account).where(Account.owner_id == user.id).order_by(Account.display_name)).all()],
+                         for item in db.scalars(select(Account).where(
+                             Account.owner_id == user.id, Account.auth_provider == "imap"
+                         ).order_by(Account.display_name)).all()],
         "quota": _transfer_quota(db, user),
     }
 
@@ -1752,12 +1829,13 @@ def create_account(payload: AccountPayload, user: User = Depends(current_user), 
     identity = hashlib.sha256(f"{user.id}:{str(payload.email).strip().lower()}:{payload.imap_username.strip().lower()}".encode()).hexdigest()
     account = Account(
         owner_id=user.id,
-        archive_uuid=str(__import__("uuid").uuid4()),
+        archive_uuid=str(uuid.uuid4()),
         display_name=payload.display_name.strip(),
         email=str(payload.email),
         imap_host=payload.imap_host.strip(),
         imap_port=payload.imap_port,
         security=payload.security,
+        auth_provider="imap",
         imap_username=payload.imap_username.strip(),
         encrypted_password=encrypt_secret(payload.password),
         root_folder=payload.root_folder.strip() if payload.root_folder else None,
@@ -1800,19 +1878,44 @@ def update_account(account_id: int, payload: AccountPayload, db: Session = Depen
 def test_saved_connection(account_id: int, db: Session = Depends(get_db)):
     account = _account_or_404(db, account_id)
     if not account.imap_enabled or not account.encrypted_password:
-        raise HTTPException(409, "Configura prima l'accesso IMAP")
+        raise HTTPException(409, "Configura prima l'accesso alla casella")
     try:
+        if account.auth_provider == "microsoft":
+            token = refresh_access_token(decrypt_secret(account.encrypted_password))
+            if token.get("refresh_token"):
+                account.encrypted_password = encrypt_secret(token["refresh_token"])
+                db.commit()
+            profile = microsoft_profile(token["access_token"])
+            folders = graph_json(token["access_token"], "/me/mailFolders?$top=1")
+            return {"ok": True, "provider": "microsoft", "email": profile.get("mail") or profile.get("userPrincipalName"),
+                    "folders": len(folders.get("value", [])), "capabilities": ["MICROSOFT_GRAPH", "OAUTH2"]}
         return test_imap_connection(account.imap_host or "", account.imap_port or 993, account.security,
                                     account.imap_username or account.email, decrypt_secret(account.encrypted_password))
     except Exception as exc:
-        raise HTTPException(400, f"Connessione IMAP fallita: {exc}") from exc
+        raise HTTPException(400, f"Connessione casella fallita: {exc}") from exc
+
+
+@app.delete("/api/accounts/{account_id}/microsoft", dependencies=[Depends(csrf_guard)])
+def disconnect_microsoft_account(account_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    account = _account_or_404(db, account_id)
+    if account.owner_id != user.id or account.auth_provider != "microsoft":
+        raise HTTPException(404, "Microsoft mailbox not found")
+    if _running_job(db, account.id):
+        raise HTTPException(409, "Interrompi il backup prima di scollegare Microsoft")
+    account.encrypted_password = None
+    account.imap_enabled = False
+    account.last_backup_status = "disconnected"
+    account.last_backup_error = "Microsoft account disconnected. Reconnect with OAuth to run future backups."
+    account.next_backup_at = None
+    db.commit()
+    return {"ok": True}
 
 
 @app.post("/api/accounts/{account_id}/backup", dependencies=[Depends(csrf_guard)])
 def start_backup(account_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     account = _account_or_404(db, account_id)
     if not account.imap_enabled or not account.encrypted_password:
-        raise HTTPException(409, "Account IMAP non configurato")
+        raise HTTPException(409, "Account non configurato o scollegato")
     if user.plan != "PLUS" and _storage_used(db, user.id) >= user.storage_limit_bytes:
         raise HTTPException(409, f"Storage limit reached. Contact the administrator at {_contact_email()}")
     if not get_bool_setting("backup_queue_enabled", db=db):

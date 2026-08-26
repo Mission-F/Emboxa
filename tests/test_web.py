@@ -16,7 +16,7 @@ from app.main import app
 import app.main as main
 from app.models import Account, AppSetting, PasskeyCredential, Snapshot, TelegramLink, User, WebExport, utcnow
 from app.scheduler import scheduler
-from app.security import encrypt_secret, hash_password
+from app.security import decrypt_secret, encrypt_secret, hash_password
 
 
 MAILBOX = {
@@ -141,6 +141,40 @@ def test_passkey_registration_login_and_delete(monkeypatch):
         assert client.delete(f"/api/passkeys/{passkey_id}", headers=headers).status_code == 200
         with SessionLocal() as db:
             assert db.scalar(select(PasskeyCredential)) is None
+
+
+def test_microsoft_oauth_connect_refresh_token_and_disconnect(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(main, "microsoft_authorize_url", lambda redirect, state: captured.update({"redirect": redirect, "state": state}) or "https://login.microsoftonline.com/common/oauth2/v2.0/authorize")
+    monkeypatch.setattr(main, "exchange_code", lambda code, redirect: {"access_token": "access-token", "refresh_token": "refresh-token"})
+    monkeypatch.setattr(main, "microsoft_profile", lambda access_token: {"id": "ms-user-1", "displayName": "Outlook Box", "mail": "outlook@example.com"})
+
+    with TestClient(app) as client:
+        with SessionLocal() as db:
+            user = User(username="oauth-user@example.com", email="oauth-user@example.com",
+                        password_hash=hash_password("secure-oauth-password"), verified_at=utcnow())
+            db.add(user)
+            db.commit()
+        headers = login(client, "oauth-user@example.com", "secure-oauth-password")
+        start = client.get("/api/auth/microsoft/start", follow_redirects=False)
+        assert start.status_code == 303 and captured["state"]
+        callback = client.get(f"/api/auth/microsoft/callback?code=abc&state={captured['state']}", follow_redirects=False)
+        assert callback.status_code == 303 and callback.headers["location"] == "/app?microsoft=connected"
+
+        with SessionLocal() as db:
+            account = db.scalar(select(Account).where(Account.email == "outlook@example.com"))
+            assert account.auth_provider == "microsoft"
+            assert account.imap_host == "graph.microsoft.com" and account.security == "oauth2"
+            assert account.encrypted_password != "refresh-token"
+            assert decrypt_secret(account.encrypted_password) == "refresh-token"
+            account_id = account.id
+
+        response = client.get("/api/accounts")
+        assert response.status_code == 200 and response.json()[0]["auth_provider"] == "microsoft"
+        assert client.delete(f"/api/accounts/{account_id}/microsoft", headers=headers).status_code == 200
+        with SessionLocal() as db:
+            account = db.get(Account, account_id)
+            assert account.encrypted_password is None and account.imap_enabled is False
 
 
 def test_web_multitenant_plans_retention_cleanup_telegram_and_public(monkeypatch):
