@@ -367,7 +367,7 @@ async function readThread(id){
 }
 function renderAttachments(message){
   const files=message.attachments.filter(attachment=>!attachment.is_inline); if(!files.length)return'';
-  return`<div class="attachments"><h3>Allegati · ${files.length}</h3><div>${files.map(attachment=>`<button type="button" data-open-attachment='${esc(JSON.stringify({...attachment,message_id:message.id,subject:message.subject,sender:message.sender,folder:message.folder,date:message.date}))}'>${icon(attachment.content_type.startsWith('image/')?'image':'file')}<b>${esc(attachment.filename)}</b><small>${bytes(attachment.size)}</small></button>`).join('')}</div></div>`;
+  return`<div class="attachments"><h3>Allegati · ${files.length}</h3><div>${files.map(attachment=>{const item={...attachment,message_id:message.id,subject:message.subject,sender:message.sender,folder:message.folder,date:message.date};const label=extensionLabel(item),color=extensionColor(label);return`<button type="button" style="--file-color:${color}" data-open-attachment='${attachmentData(item)}'>${attachmentPreview(item)}<b title="${esc(attachment.filename)}">${esc(attachment.filename)}</b><small>${label} · ${bytes(attachment.size)}</small></button>`;}).join('')}</div></div>`;
 }
 $('#reader').addEventListener('click',async event=>{
   if(event.target.closest('.mobile-reader-back'))return $('#reader').innerHTML=emptyReader();
@@ -404,12 +404,13 @@ function extensionColor(label) {
   const key = String(label || '').toUpperCase();
   const colors = {
     PDF: '#df493b',
-    JPG: '#668aa8', JPEG: '#668aa8', PNG: '#668aa8', GIF: '#668aa8', WEBP: '#668aa8', SVG: '#668aa8',
-    XLS: '#2c8757', XLSX: '#2c8757', CSV: '#2c8757', NUMB: '#2c8757',
-    DOC: '#14213d', DOCX: '#14213d', RTF: '#14213d',
+    JPG: '#668aa8', JPEG: '#668aa8', PNG: '#668aa8', GIF: '#668aa8', WEBP: '#668aa8', SVG: '#668aa8', IMAGE: '#668aa8', IMAGES: '#668aa8',
+    XLS: '#2c8757', XLSX: '#2c8757', ODS: '#2c8757', CSV: '#2c8757', NUMB: '#2c8757', SPREADSHEETS: '#2c8757',
+    DOC: '#2563eb', DOCX: '#2563eb', ODT: '#2563eb', RTF: '#2563eb', DOCUMENTS: '#2563eb',
     PPT: '#f97316', PPTX: '#f97316', KEY: '#f97316',
     ZIP: '#7c3aed', RAR: '#7c3aed', '7Z': '#7c3aed', TAR: '#7c3aed', GZ: '#7c3aed',
-    EML: '#fca311', MSG: '#fca311', TXT: '#64748b', MD: '#64748b'
+    EML: '#fca311', MSG: '#fca311', TXT: '#64748b', MD: '#64748b',
+    MP3: '#0891b2', WAV: '#0891b2', M4A: '#0891b2', MP4: '#db2777', MOV: '#db2777', AVI: '#db2777'
   };
   if (colors[key]) return colors[key];
   let hash = 0;

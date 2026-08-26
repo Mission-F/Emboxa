@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import func, select, text
+from sqlalchemy import select, text
 
 from .config import ARCHIVES_DIR, BACKUP_RETRIES, IMAP_FETCH_BATCH
 from .database import SessionLocal
@@ -20,6 +20,7 @@ from .mail_parser import parse_and_store
 from .models import Account, Attachment, BackupJob, Folder, Message, Snapshot, User, utcnow
 from .security import decrypt_secret, encrypt_secret
 from .settings_service import get_float_setting, get_int_setting
+from .storage import directory_size, user_storage_used
 
 log = logging.getLogger("emboxa.backup")
 
@@ -41,10 +42,6 @@ def next_backup_time(account: Account, from_time=None):
 
 def snapshot_root(account_uuid: str, snapshot_uuid: str) -> Path:
     return ARCHIVES_DIR / account_uuid / "snapshots" / snapshot_uuid
-
-
-def _directory_size(path: Path) -> int:
-    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
 
 
 def _snapshot_comparison(previous: Snapshot, current: Snapshot) -> dict:
@@ -308,13 +305,12 @@ def run_backup(job_id: int) -> None:
                 db.commit()
                 owner = db.get(User, account.owner_id)
                 if owner and owner.plan != "PLUS":
-                    existing = db.scalar(select(func.coalesce(func.sum(Snapshot.archive_size), 0)).join(Account, Snapshot.account_id == Account.id).where(
-                        Account.owner_id == owner.id, Snapshot.status.in_(["completed", "active"]))) or 0
-                    if existing + _directory_size(stage_path) > owner.storage_limit_bytes:
+                    existing = user_storage_used(db, owner.id)
+                    if existing + directory_size(stage_path) > owner.storage_limit_bytes:
                         raise RuntimeError("Storage limit reached; the previous valid backup was preserved")
 
         _check_cancel(db, job)
-        archive_size = _directory_size(stage_path)
+        archive_size = directory_size(stage_path)
         final_path = snapshot_root(account.archive_uuid, snapshot.snapshot_uuid)
         stage_path.replace(final_path)  # atomic while both paths are on the same volume
         stage_path = final_path  # retained until the database switch commits, for rollback cleanup

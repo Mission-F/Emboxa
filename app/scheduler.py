@@ -6,7 +6,7 @@ import threading
 from datetime import timedelta
 from pathlib import Path
 
-from sqlalchemy import func, select, text
+from sqlalchemy import select, text
 
 from .backup import backup_manager, snapshot_root
 from .config import ARCHIVES_DIR, EXPORTS_DIR
@@ -15,6 +15,7 @@ from .models import (Account, BackupJob, NotificationDelivery, PermanentMailboxH
                      Snapshot, User, WebExport, utcnow)
 from .telegram_service import notify_user
 from .settings_service import get_bool_setting, save_setting
+from .storage import user_storage_used
 
 log = logging.getLogger("mailvault.scheduler")
 
@@ -106,8 +107,7 @@ class IntegratedScheduler:
                     if notify_user(snapshot.account.owner_id, f"{snapshot.account.display_name} expires in {days} days.", "notify_expiring"):
                         db.add(NotificationDelivery(user_id=snapshot.account.owner_id, event_key=key))
             for user in db.scalars(select(User).where(User.plan == "STANDARD", User.storage_limit_bytes > 0)).all():
-                used = db.scalar(select(func.coalesce(func.sum(Snapshot.archive_size), 0)).join(Account, Snapshot.account_id == Account.id).where(
-                    Account.owner_id == user.id, Snapshot.status.in_(["completed", "active"]))) or 0
+                used = user_storage_used(db, user.id)
                 threshold = 95 if used >= user.storage_limit_bytes * .95 else (80 if used >= user.storage_limit_bytes * .8 else 0)
                 key = f"storage:{threshold}"
                 if threshold and not db.scalar(select(NotificationDelivery).where(NotificationDelivery.user_id == user.id,

@@ -72,6 +72,7 @@ from .models import (
 )
 from .scheduler import scheduler
 from .settings_service import get_bool_setting, get_float_setting, get_int_setting, get_setting, save_setting
+from .storage import account_active_archive_size, snapshot_disk_size, total_archive_storage_used, user_storage_used
 from .security import (
     clear_login_failures,
     csrf_matches,
@@ -1287,7 +1288,7 @@ def admin_operations(_admin: User = Depends(admin_user), db: Session = Depends(g
             "worker_status": "Running" if scheduler.is_running else "Stopped",
             "backup_queue_status": queue, "last_cleanup": get_setting("last_cleanup_at", db=db) or None,
             "storage_used": disk.used, "storage_capacity": disk.total,
-            "storage_total": db.scalar(select(func.coalesce(func.sum(Account.archive_size), 0))) or 0,
+            "storage_total": total_archive_storage_used(db),
             "users": db.scalar(select(func.count(User.id))) or 0,
             "jobs": [{"id": job.id, "status": job.status, "account_id": job.account_id, "error": job.error,
                       "created_at": job.created_at, "finished_at": job.finished_at} for job in jobs]}
@@ -1471,7 +1472,7 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
-def _account_json(account: Account, job: BackupJob | None = None) -> dict:
+def _account_json(account: Account, job: BackupJob | None = None, db: Session | None = None) -> dict:
     return {
         "id": account.id,
         "display_name": account.display_name,
@@ -1490,7 +1491,7 @@ def _account_json(account: Account, job: BackupJob | None = None) -> dict:
         "last_backup_status": account.last_backup_status,
         "last_backup_error": account.last_backup_error,
         "message_count": account.message_count,
-        "archive_size": account.archive_size,
+        "archive_size": account_active_archive_size(db, account) if db else account.archive_size,
         "retention_versions": account.retention_versions,
         "is_permanent": account.is_permanent,
         "permanent_locked_until": account.permanent_locked_until,
@@ -1591,14 +1592,13 @@ def _job_json(job: BackupJob) -> dict:
 
 
 def _storage_used(db: Session, user_id: int) -> int:
-    return int(db.scalar(select(func.coalesce(func.sum(Snapshot.archive_size), 0)).join(Account, Snapshot.account_id == Account.id).where(
-        Account.owner_id == user_id, Snapshot.status.in_(["completed", "active"]))) or 0)
+    return user_storage_used(db, user_id)
 
 
 @app.get("/api/accounts", dependencies=[Depends(current_user)])
 def list_accounts(user: User = Depends(current_user), db: Session = Depends(get_db)):
     accounts = db.scalars(select(Account).where(Account.owner_id == user.id).order_by(Account.display_name.collate("NOCASE"))).all()
-    return [_account_json(account, _running_job(db, account.id)) for account in accounts]
+    return [_account_json(account, _running_job(db, account.id), db) for account in accounts]
 
 
 @app.get("/api/web/usage")
@@ -1815,7 +1815,7 @@ def create_account(payload: AccountPayload, user: User = Depends(current_user), 
     account.next_backup_at = next_backup_time(account)
     db.add(account)
     db.commit()
-    return _account_json(account)
+    return _account_json(account, db=db)
 
 
 @app.put("/api/accounts/{account_id}", dependencies=[Depends(csrf_guard)])
@@ -1838,7 +1838,7 @@ def update_account(account_id: int, payload: AccountPayload, db: Session = Depen
         raise HTTPException(422, "Inserisci una password IMAP per attivare questo archivio importato")
     account.next_backup_at = next_backup_time(account)
     db.commit()
-    return _account_json(account, _running_job(db, account.id))
+    return _account_json(account, _running_job(db, account.id), db)
 
 
 @app.patch("/api/accounts/{account_id}/settings", dependencies=[Depends(csrf_guard)])
@@ -1848,7 +1848,7 @@ def update_account_settings(account_id: int, payload: AccountSettingsPayload, us
         raise HTTPException(404, "Account non trovato")
     account.retention_versions = payload.retention_versions
     db.commit()
-    return _account_json(account, _running_job(db, account.id))
+    return _account_json(account, _running_job(db, account.id), db)
 
 
 @app.post("/api/accounts/{account_id}/test", dependencies=[Depends(csrf_guard)])
@@ -1925,7 +1925,7 @@ def list_versions(account_id: int, db: Session = Depends(get_db)):
     ).order_by(Snapshot.completed_at.desc(), Snapshot.id.desc())).all()
     return [{
         "id": row.id, "created_at": row.created_at, "completed_at": row.completed_at,
-        "message_count": row.message_count, "archive_size": row.archive_size,
+        "message_count": row.message_count, "archive_size": snapshot_disk_size(account, row),
         "attachment_count": row.attachment_count, "status": row.status,
         "expires_at": row.expires_at,
         "protected": row.protected, "protection_reason": row.protection_reason,
@@ -1938,7 +1938,7 @@ def list_versions(account_id: int, db: Session = Depends(get_db)):
 def make_permanent(account_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     target = _account_or_404(db, account_id)
     if target.is_permanent:
-        return _account_json(target, _running_job(db, target.id))
+        return _account_json(target, _running_job(db, target.id), db)
     now = utcnow()
     current_items = db.scalars(select(Account).where(Account.owner_id == user.id, Account.is_permanent.is_(True))).all()
     current = current_items[0] if current_items else None
@@ -1963,7 +1963,7 @@ def make_permanent(account_id: int, user: User = Depends(current_user), db: Sess
     db.add(PermanentMailboxHistory(user_id=user.id, mailbox_identity=target.mailbox_identity,
                                    designated_at=now, locked_until=lock_until))
     db.commit()
-    return _account_json(target, _running_job(db, target.id))
+    return _account_json(target, _running_job(db, target.id), db)
 
 
 class ProtectionPayload(BaseModel):
@@ -2063,7 +2063,8 @@ def _create_export(account_id: int, user: User, db: Session, progress=None) -> W
         if progress:
             progress(96, "Uso l'export già pronto più recente.")
         return existing
-    if user.plan != "PLUS" and _storage_used(db, user.id) + _active_export_size(db, user.id) + account.archive_size > user.storage_limit_bytes:
+    active_size = account_active_archive_size(db, account)
+    if user.plan != "PLUS" and _storage_used(db, user.id) + _active_export_size(db, user.id) + active_size > user.storage_limit_bytes:
         raise HTTPException(409, f"Storage limit reached. Contact the administrator at {_contact_email()}")
     try:
         try:
@@ -2172,7 +2173,8 @@ def _start_export_job(account_id: int, user: User, db: Session) -> dict:
     account = _account_or_404(db, account_id)
     if account.owner_id != user.id:
         raise HTTPException(404, "Account non trovato")
-    if user.plan != "PLUS" and _storage_used(db, user.id) + _active_export_size(db, user.id) + account.archive_size > user.storage_limit_bytes:
+    active_size = account_active_archive_size(db, account)
+    if user.plan != "PLUS" and _storage_used(db, user.id) + _active_export_size(db, user.id) + active_size > user.storage_limit_bytes:
         raise HTTPException(409, f"Storage limit reached. Contact the administrator at {_contact_email()}")
     with EXPORT_JOB_LOCK:
         for job in EXPORT_JOBS.values():
@@ -2301,7 +2303,7 @@ def _run_mbox_import_job(job_id: str, user_id: int, upload_dir: Path, sources: l
                 status="completed",
                 percent=100,
                 detail="Import MBOX completato.",
-                account=_account_json(account),
+                account=_account_json(account, db=db),
                 finished_at=utcnow(),
             )
     except Exception as exc:
@@ -2573,6 +2575,8 @@ def _message_json(message: Message, include_body: bool = True) -> dict:
     attachments = [{
         "id": item.id, "filename": item.filename, "content_type": item.content_type,
         "size": item.size, "content_id": item.content_id, "is_inline": item.is_inline,
+        "extension": Path(item.filename).suffix.lower().lstrip("."), "category": _attachment_category(item),
+        "open_url": f"/api/attachments/{item.id}?inline=1", "download_url": f"/api/attachments/{item.id}",
         "url": f"/api/attachments/{item.id}",
     } for item in message.attachments]
     result = {
@@ -2866,7 +2870,7 @@ def account_stats(account_id: int, snapshot_id: int | None = None, db: Session =
         Message.snapshot_id == snapshot.id, Message.is_deleted.is_(False)
     )).one()
     return {"messages": snapshot.message_count, "folders": db.scalar(select(func.count(Folder.id)).where(Folder.snapshot_id == snapshot.id)) or 0,
-            "attachments": attachments, "deleted": deleted, "archive_size": snapshot.archive_size, "oldest": date_min, "newest": date_max}
+            "attachments": attachments, "deleted": deleted, "archive_size": snapshot_disk_size(_account, snapshot), "oldest": date_min, "newest": date_max}
 
 
 @app.exception_handler(ArchiveError)

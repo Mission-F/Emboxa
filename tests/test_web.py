@@ -10,7 +10,8 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app.config import EXPORTS_DIR, STANDARD_STORAGE_LIMIT_BYTES
+from app.backup import snapshot_root
+from app.config import EXPORTS_DIR
 from app.database import SessionLocal
 from app.main import app
 import app.main as main
@@ -177,6 +178,38 @@ def test_microsoft_oauth_connect_refresh_token_and_disconnect(monkeypatch):
             assert account.encrypted_password is None and account.imap_enabled is False
 
 
+def test_storage_usage_is_recomputed_after_archive_delete():
+    with SessionLocal() as db:
+        user = User(username="storage-live@example.com", email="storage-live@example.com",
+                    password_hash=hash_password("secure-storage-password"), verified_at=utcnow())
+        db.add(user); db.flush()
+        account = Account(owner_id=user.id, archive_uuid="00000000-0000-0000-0000-000000000188",
+                          display_name="Storage Live", email="storage-live@example.com",
+                          imap_enabled=False, mailbox_identity="storage-live", archive_size=999999)
+        db.add(account); db.flush()
+        snapshot = Snapshot(account_id=account.id, snapshot_uuid="00000000-0000-0000-0000-000000000189",
+                            status="completed", completed_at=utcnow(), archive_size=999999)
+        db.add(snapshot); db.flush()
+        account.active_snapshot_id = snapshot.id
+        root = snapshot_root(account.archive_uuid, snapshot.snapshot_uuid)
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "payload.bin").write_bytes(b"live-storage")
+        db.commit()
+        account_id = account.id
+
+    with TestClient(app) as client:
+        headers = login(client, "storage-live@example.com", "secure-storage-password")
+        usage = client.get("/api/web/usage")
+        assert usage.status_code == 200
+        assert usage.json()["storage_used"] == len(b"live-storage")
+
+        deleted = client.delete(f"/api/accounts/{account_id}/archive", headers=headers)
+        assert deleted.status_code == 200, deleted.text
+        usage = client.get("/api/web/usage")
+        assert usage.status_code == 200
+        assert usage.json()["storage_used"] == 0
+
+
 def test_web_multitenant_plans_retention_cleanup_telegram_and_public(monkeypatch):
     sent: list[tuple[str, str, str, str | None]] = []
     monkeypatch.setattr(main, "_send_email", lambda to, subject, body, html=None: sent.append((to, subject, body, html)))
@@ -208,10 +241,14 @@ def test_web_multitenant_plans_retention_cleanup_telegram_and_public(monkeypatch
 
         with SessionLocal() as db:
             user = db.scalar(select(User).where(User.email == "user@example.com"))
-            account = db.get(Account, account_ids[1]); account.archive_size = STANDARD_STORAGE_LIMIT_BYTES
+            user.storage_limit_bytes = 128
+            account = db.get(Account, account_ids[1]); account.archive_size = 128
             snapshot = Snapshot(account_id=account.id, snapshot_uuid="00000000-0000-0000-0000-000000000088",
-                                status="completed", completed_at=utcnow(), archive_size=STANDARD_STORAGE_LIMIT_BYTES)
+                                status="completed", completed_at=utcnow(), archive_size=128)
             db.add(snapshot); db.flush(); account.active_snapshot_id = snapshot.id
+            root = snapshot_root(account.archive_uuid, snapshot.snapshot_uuid)
+            root.mkdir(parents=True, exist_ok=True)
+            (root / "payload.bin").write_bytes(b"x" * 128)
             admin = User(username="admin@example.com", email="admin@example.com", password_hash=hash_password("secure-admin-password"),
                          verified_at=utcnow(), role="admin", plan="PLUS", storage_limit_bytes=0)
             other = User(username="other@example.com", email="other@example.com", password_hash=hash_password("secure-other-password"),
