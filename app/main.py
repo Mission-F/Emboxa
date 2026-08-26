@@ -94,6 +94,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("emboxa")
 BASE_DIR = Path(__file__).resolve().parent
+ASSET_VERSION = "20260826-2118"
 
 
 @asynccontextmanager
@@ -166,6 +167,8 @@ async def security_headers(request: Request, call_next):
         )
     if request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
+    if request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-store, max-age=0, must-revalidate"
     if request.url.path.startswith(("/app", "/admin", "/api/", "/login", "/register", "/verify", "/reset-password")):
         response.headers["X-Robots-Tag"] = "noindex, nofollow"
     return response
@@ -899,7 +902,11 @@ def index(request: Request, db: Session = Depends(get_db)):
     user = db.get(User, user_id) if user_id else None
     if not user or not user.verified_at or user.status != "active":
         return RedirectResponse("/login", status_code=303)
-    return templates.TemplateResponse(request, "app.html", {"csrf_token": _csrf(request), "web_user": user, "admin_email": _contact_email()})
+    return templates.TemplateResponse(
+        request,
+        "app.html",
+        {"csrf_token": _csrf(request), "web_user": user, "admin_email": _contact_email(), "asset_version": ASSET_VERSION},
+    )
 
 
 @app.get("/api/preferences")

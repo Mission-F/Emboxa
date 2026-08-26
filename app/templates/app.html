@@ -8,8 +8,8 @@
   <meta name="theme-color" content="#0B1F3A"><meta name="application-name" content="EMBOXA"><meta name="apple-mobile-web-app-title" content="EMBOXA">
   <title>EMBOXA · Archivio email privato</title>
   <link rel="icon" href="/static/icons/favicon-64.png" type="image/png"><link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png"><link rel="manifest" href="/static/manifest.webmanifest">
-  <link rel="stylesheet" href="/static/styles.css">
-  <link rel="stylesheet" href="/static/shared-tokens.css">
+  <link rel="stylesheet" href="/static/styles.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/static/shared-tokens.css?v={{ asset_version }}">
 </head>
 <body>
   <header class="topbar">
@@ -161,6 +161,6 @@
     <section class="transfer-step hidden" data-transfer-step="3"><h3>Choose the folder layout</h3><p>Preserving folders keeps the archive structure in the destination mailbox.</p><div class="choice-grid"><label class="choice-card"><input type="radio" name="mode" value="preserve" checked><span><b>Preserve source folders</b><small>Recommended for a complete restore.</small></span></label><label class="choice-card"><input type="radio" name="mode" value="single"><span><b>Put everything in one folder</b><small>Useful for partial recovery and review.</small></span></label></div><label id="transfer-single-folder" class="hidden">Destination folder<input name="single_folder" value="EMBOXA Restore"></label><label class="mini-switch"><input name="skip_duplicates" type="checkbox" checked><span>Skip messages with a duplicate Message-ID</span></label></section>
     <section class="transfer-step hidden" data-transfer-step="4"><h3>Review and start</h3><p>The original RFC822 message bytes are copied with IMAP APPEND. Your archive remains unchanged.</p><div id="transfer-review" class="transfer-review"></div><div id="transfer-jobs" class="transfer-jobs" aria-live="polite"></div><div id="transfer-history" class="transfer-history" aria-live="polite"></div></section>
     <p id="transfer-status" class="form-status" role="status"></p><div class="dialog-actions"><button id="transfer-back" class="ghost hidden" type="button">Back</button><span class="grow"></span><button class="ghost" type="button" data-close="transfer-dialog">Cancel</button><button id="transfer-next" class="primary" type="button">Continue</button><button id="transfer-start" class="primary hidden" type="submit">Start restore</button></div></form></dialog>
-  <div id="toast" class="toast" role="status" aria-live="polite"></div><script src="/static/i18n.js"></script><script src="/static/app.js" defer></script><script src="/static/web-app.js" defer></script>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div><script src="/static/i18n.js?v={{ asset_version }}"></script><script src="/static/app.js?v={{ asset_version }}" defer></script><script src="/static/web-app.js?v={{ asset_version }}" defer></script>
 </body>
 </html>

@@ -448,9 +448,22 @@ function extensionColor(label) {
   for (const char of label) hash = (hash * 31 + char.charCodeAt(0)) % palette.length;
   return palette[hash];
 }
+function extensionClass(label) {
+  const key = String(label || '').toUpperCase();
+  if (key === 'PDF') return 'file-kind-pdf';
+  if (['DOC','DOCX','ODT','RTF','DOCUMENTS'].includes(key)) return 'file-kind-doc';
+  if (['XLS','XLSX','ODS','CSV','NUMB','SPREADSHEETS'].includes(key)) return 'file-kind-sheet';
+  if (['PPT','PPTX','KEY'].includes(key)) return 'file-kind-slide';
+  if (['JPG','JPEG','PNG','GIF','WEBP','SVG','IMAGE','IMAGES'].includes(key)) return 'file-kind-image';
+  if (['ZIP','RAR','7Z','TAR','GZ'].includes(key)) return 'file-kind-archive';
+  if (['MP3','WAV','M4A'].includes(key)) return 'file-kind-audio';
+  if (['MP4','MOV','AVI'].includes(key)) return 'file-kind-video';
+  if (['EML','MSG'].includes(key)) return 'file-kind-mail';
+  return 'file-kind-other';
+}
 function attachmentPreview(item){
   const label = extensionLabel(item), color = extensionColor(label);
-  return `<div class="file-tile extension-tile" style="--file-color:${color};background:${color}"><b>${esc(label)}</b></div>`;
+  return `<div class="file-tile extension-tile ${extensionClass(label)}" style="--file-color:${color};background-color:${color};background-image:none"><b>${esc(label)}</b></div>`;
 }
 function attachmentCard(item) {
   const label = extensionLabel(item), color = extensionColor(label);
