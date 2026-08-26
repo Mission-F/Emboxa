@@ -59,6 +59,19 @@ def wait_export(client: TestClient, job: dict) -> dict:
     raise AssertionError("export job did not complete")
 
 
+def wait_mbox_import(client: TestClient, job: dict) -> dict:
+    for _ in range(80):
+        status = client.get(job["status_url"])
+        assert status.status_code == 200, status.text
+        payload = status.json()
+        if payload["status"] == "completed":
+            return payload["account"]
+        if payload["status"] == "failed":
+            raise AssertionError(payload.get("error") or payload.get("detail"))
+        time.sleep(0.05)
+    raise AssertionError("mbox import job did not complete")
+
+
 def test_passkey_registration_login_and_delete(monkeypatch):
     class FakeOptions:
         def __init__(self, challenge: bytes, allow_credentials=None):
@@ -208,6 +221,58 @@ def test_storage_usage_is_recomputed_after_archive_delete():
         usage = client.get("/api/web/usage")
         assert usage.status_code == 200
         assert usage.json()["storage_used"] == 0
+
+
+def test_mbox_import_from_link_downloads_server_side(monkeypatch):
+    class FakeResponse:
+        status = 200
+        headers = {"content-length": str(len(b"From a@example.com Sat Jan  1 00:00:00 2022\nSubject: Linked\n\nBody\n"))}
+
+        def __init__(self):
+            self._chunks = [b"From a@example.com Sat Jan  1 00:00:00 2022\n", b"Subject: Linked\n\nBody\n"]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size):
+            return self._chunks.pop(0) if self._chunks else b""
+
+    downloaded = {}
+    monkeypatch.setattr(main, "urlopen", lambda request, timeout=60: downloaded.setdefault("url", request.full_url) and FakeResponse())
+
+    def fake_import(sources, user_id, display_name, email, progress=None):
+        assert sources[0].path.read_text().startswith("From a@example.com")
+        assert sources[0].folder_name == "linked"
+        if progress:
+            progress(95, 1, "linked")
+        with SessionLocal() as db:
+            account = Account(owner_id=user_id, archive_uuid="00000000-0000-0000-0000-000000000288",
+                              display_name=display_name, email=email,
+                              imap_enabled=False, auth_provider="mbox", mailbox_identity="linked")
+            db.add(account); db.commit()
+            return account.id
+
+    monkeypatch.setattr(main, "import_mbox_sources", fake_import)
+    with SessionLocal() as db:
+        user = User(username="mbox-link@example.com", email="mbox-link@example.com",
+                    password_hash=hash_password("secure-mbox-link-password"), verified_at=utcnow(),
+                    plan="PLUS", storage_limit_bytes=0)
+        db.add(user); db.commit()
+
+    with TestClient(app) as client:
+        headers = login(client, "mbox-link@example.com", "secure-mbox-link-password")
+        response = client.post("/api/import/mbox/link", json={
+            "url": "https://example.com/linked.mbox",
+            "display_name": "Linked MBOX",
+            "email": "linked@local.invalid",
+        }, headers=headers)
+        assert response.status_code == 200, response.text
+        account = wait_mbox_import(client, response.json())
+        assert account["display_name"] == "Linked MBOX"
+        assert downloaded["url"] == "https://example.com/linked.mbox"
 
 
 def test_web_multitenant_plans_retention_cleanup_telegram_and_public(monkeypatch):

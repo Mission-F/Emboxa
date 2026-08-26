@@ -99,7 +99,7 @@ function accountCard(account) {
   const job = account.job;
   const microsoft = account.auth_provider === 'microsoft';
   const mbox = account.auth_provider === 'mbox';
-  const providerLabel = microsoft ? ' · Microsoft Graph' : mbox ? ' · MBOX offline' : '';
+  const providerLabel = microsoft ? ' · Microsoft' : mbox ? ' · MBOX offline' : '';
   const progress = job ? `<div class="job"><div><span>${esc(job.current_folder || statusLabel(job.status))}</span><strong>${job.status==='queued'?'In coda':`${job.percent}%`}</strong></div><div class="progress"><i style="width:${job.percent}%"></i></div><small>${job.processed_messages.toLocaleString('it-IT')} / ${job.total_messages ? job.total_messages.toLocaleString('it-IT') : '?'} messaggi · ${job.attachment_count.toLocaleString('it-IT')} allegati${job.status==='running'?` · ${job.throughput.toFixed(1)} msg/s · ETA ${duration(job.eta_seconds)}`:''}</small><button data-action="cancel" data-id="${job.id}" class="text-button danger-text">Interrompi</button></div>` : '';
   return `<article class="account-card" data-account-card="${account.id}">
       <div class="card-top"><div class="account-avatar">${microsoft?'M':mbox?'B':esc(account.display_name.charAt(0).toUpperCase())}</div><div class="account-title"><h2>${esc(account.display_name)}</h2><p>${esc(account.email)}${providerLabel}</p></div>
@@ -535,6 +535,27 @@ async function waitForMboxImportJob(job) {
   if (current.status === 'failed') throw new Error(current.error || current.detail || 'Import MBOX non riuscito');
   return current.account;
 }
+function uploadMboxFormData(data, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/import/mbox');
+    xhr.setRequestHeader('X-CSRF-Token', csrf);
+    xhr.upload.onprogress = event => {
+      if (!event.lengthComputable) return onProgress?.(8, 'Upload MBOX in corso…');
+      const percent = Math.max(1, Math.min(32, Math.round((event.loaded / event.total) * 32)));
+      onProgress?.(percent, `Upload MBOX · ${bytes(event.loaded)} / ${bytes(event.total)}`);
+    };
+    xhr.onload = () => {
+      let payload = null;
+      try { payload = xhr.responseText ? JSON.parse(xhr.responseText) : null; } catch {}
+      if (xhr.status === 401) { location.href = '/login'; return reject(new Error('Sessione scaduta')); }
+      if (xhr.status < 200 || xhr.status >= 300) return reject(new Error(payload?.detail || `Errore ${xhr.status}`));
+      resolve(payload);
+    };
+    xhr.onerror = () => reject(new Error('Upload MBOX non riuscito'));
+    xhr.send(data);
+  });
+}
 $('#mbox-import-button').addEventListener('click',()=>$('#mbox-import-input').click());
 $('#mbox-import-input').addEventListener('change',async event=>{
   const files=[...event.target.files]; if(!files.length)return;
@@ -547,13 +568,31 @@ $('#mbox-import-input').addEventListener('change',async event=>{
   mboxImportProgress('Upload MBOX…',5,'Carico i file sul server, poi l’import continua in background.');
   dialog.showModal();
   try{
-    const job=await api('/api/import/mbox',{method:'POST',body:data});
+    const job=await uploadMboxFormData(data,(percent,detail)=>mboxImportProgress('Upload MBOX…',percent,detail));
     const account=await waitForMboxImportJob(job);
     mboxImportProgress('Import MBOX completato',100,`${account?.message_count?.toLocaleString('it-IT')||0} messaggi importati. Ora puoi aprire l’archivio come una mailbox.`);
     toast('Import MBOX completato');
     loadAccounts();
   }catch(error){mboxImportProgress('Import MBOX non completato',0,error.message);toast(error.message,'error');}
   finally{$('#mbox-import-close').disabled=false;$('#mbox-import-done').disabled=false;event.target.value='';}
+});
+$('#mbox-import-link-button').addEventListener('click',async()=>{
+  const url=(prompt('Incolla il link diretto al file MBOX da scaricare sul server')||'').trim();
+  if(!url)return;
+  const defaultName=new URL(url, location.href).pathname.split('/').pop()?.replace(/\.mbox$/i,'')||'Archivio MBOX importato';
+  const displayName=(prompt('Nome da mostrare per questo account MBOX offline', defaultName)||defaultName).trim();
+  const dialog=$('#mbox-import-dialog'); $('#mbox-import-close').disabled=true; $('#mbox-import-done').disabled=true;
+  $('#mbox-import-summary').textContent='Import da link · account offline senza sincronizzazione.';
+  mboxImportProgress('Download MBOX…',1,'Scarico il file direttamente dal server.');
+  dialog.showModal();
+  try{
+    const job=await api('/api/import/mbox/link',{method:'POST',body:JSON.stringify({url,display_name:displayName,email:'mbox-import@local.invalid'})});
+    const account=await waitForMboxImportJob(job);
+    mboxImportProgress('Import MBOX completato',100,`${account?.message_count?.toLocaleString('it-IT')||0} messaggi importati. Ora puoi aprire l’archivio come una mailbox.`);
+    toast('Import MBOX completato');
+    loadAccounts();
+  }catch(error){mboxImportProgress('Import MBOX non completato',0,error.message);toast(error.message,'error');}
+  finally{$('#mbox-import-close').disabled=false;$('#mbox-import-done').disabled=false;}
 });
 $('#logout-button').addEventListener('click',async()=>{await api('/api/logout',{method:'POST'});location.href='/login';});
 

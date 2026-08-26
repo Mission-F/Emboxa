@@ -443,6 +443,12 @@ class IMAPTransferPayload(BaseModel):
     skip_duplicates: bool = True
 
 
+class MboxLinkPayload(BaseModel):
+    url: str = Field(min_length=8, max_length=2048)
+    display_name: str = Field(default="Archivio MBOX importato", min_length=1, max_length=200)
+    email: str = Field(default="mbox-import@local.invalid", max_length=320)
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
@@ -2283,12 +2289,13 @@ def _set_mbox_import_job(job_id: str, **changes) -> None:
 
 
 def _run_mbox_import_job(job_id: str, user_id: int, upload_dir: Path, sources: list[MboxSource], display_name: str, email: str) -> None:
-    _set_mbox_import_job(job_id, status="running", percent=10, detail="Import MBOX avviato.", started_at=utcnow())
+    _set_mbox_import_job(job_id, status="running", percent=35, detail="Import MBOX avviato.", started_at=utcnow())
     try:
         def progress(percent: int, messages: int, folder: str) -> None:
+            mapped = 35 + int(min(63, max(0, percent - 15) / 80 * 63))
             _set_mbox_import_job(
                 job_id,
-                percent=percent,
+                percent=mapped,
                 messages=messages,
                 detail=f"{folder} · {messages} messaggi importati",
             )
@@ -2309,6 +2316,74 @@ def _run_mbox_import_job(job_id: str, user_id: int, upload_dir: Path, sources: l
     except Exception as exc:
         detail = getattr(exc, "detail", None) or str(exc) or "Import MBOX failed"
         log.warning("MBOX import job %s failed: %s", job_id, detail)
+        _set_mbox_import_job(job_id, status="failed", percent=100, detail=detail, error=detail, finished_at=utcnow())
+    finally:
+        shutil.rmtree(upload_dir, ignore_errors=True)
+
+
+def _download_name_from_response(url: str, headers) -> str:
+    disposition = headers.get("content-disposition", "") if headers else ""
+    match = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)', disposition, flags=re.I)
+    if match:
+        return Path(match.group(1).strip()).name
+    name = Path(urlparse(url).path).name
+    return name or "download.mbox"
+
+
+def _run_mbox_link_import_job(job_id: str, user_id: int, payload: MboxLinkPayload, upload_dir: Path) -> None:
+    _set_mbox_import_job(job_id, status="running", percent=3, detail="Download MBOX dal link…", started_at=utcnow())
+    try:
+        parsed = urlparse(payload.url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise MboxImportError("Inserisci un link http/https diretto a un file MBOX")
+        request = URLRequest(payload.url, headers={"User-Agent": "Emboxa-Web/1.0"})
+        with urlopen(request, timeout=60) as response:
+            status = getattr(response, "status", 200)
+            if status >= 400:
+                raise MboxImportError(f"Download non riuscito: HTTP {status}")
+            total = int(response.headers.get("content-length") or 0)
+            original = _download_name_from_response(payload.url, response.headers)
+            if not _is_mbox_upload(original):
+                original = f"{Path(original).stem or 'download'}.mbox"
+            destination = upload_dir / "00000.mbox"
+            downloaded = 0
+            with destination.open("wb") as target:
+                while chunk := response.read(1024 * 1024):
+                    downloaded += len(chunk)
+                    if downloaded > IMPORT_MAX_BYTES:
+                        raise MboxImportError("Il file MBOX supera il limite di import configurato")
+                    target.write(chunk)
+                    if total:
+                        percent = 3 + int(min(32, downloaded / max(1, total) * 32))
+                        _set_mbox_import_job(job_id, percent=percent, detail=f"Download MBOX · {downloaded / 1024**2:.1f} MB")
+                    else:
+                        _set_mbox_import_job(job_id, percent=12, detail=f"Download MBOX · {downloaded / 1024**2:.1f} MB")
+        if not destination.exists() or destination.stat().st_size == 0:
+            raise MboxImportError("Il link non ha scaricato un file valido")
+
+        source = MboxSource(destination, original, folder_name_from_upload(original))
+
+        def progress(percent: int, messages: int, folder: str) -> None:
+            mapped = 35 + int(min(63, max(0, percent - 15) / 80 * 63))
+            _set_mbox_import_job(job_id, percent=mapped, messages=messages, detail=f"{folder} · {messages} messaggi importati")
+
+        _set_mbox_import_job(job_id, percent=35, detail="Download completato. Import MBOX avviato.")
+        account_id = import_mbox_sources([source], user_id, display_name=payload.display_name, email=payload.email, progress=progress)
+        with SessionLocal() as db:
+            account = db.get(Account, account_id)
+            if not account:
+                raise MboxImportError("Account importato non trovato")
+            _set_mbox_import_job(
+                job_id,
+                status="completed",
+                percent=100,
+                detail="Import MBOX completato.",
+                account=_account_json(account, db=db),
+                finished_at=utcnow(),
+            )
+    except Exception as exc:
+        detail = getattr(exc, "detail", None) or str(exc) or "Import MBOX failed"
+        log.warning("MBOX link import job %s failed: %s", job_id, detail)
         _set_mbox_import_job(job_id, status="failed", percent=100, detail=detail, error=detail, finished_at=utcnow())
     finally:
         shutil.rmtree(upload_dir, ignore_errors=True)
@@ -2352,7 +2427,7 @@ async def upload_mbox_import(
             "id": job_id,
             "user_id": user.id,
             "status": "queued",
-            "percent": 5,
+            "percent": 33,
             "detail": f"{len(sources)} file MBOX caricati. Import in coda.",
             "created_at": utcnow(),
             "started_at": None,
@@ -2380,6 +2455,39 @@ async def upload_mbox_import(
                 await file.close()
             except Exception:
                 pass
+
+
+@app.post("/api/import/mbox/link", dependencies=[Depends(csrf_guard)])
+def link_mbox_import(payload: MboxLinkPayload, user: User = Depends(current_user)):
+    if user.plan != "PLUS":
+        raise HTTPException(403, "L'import MBOX è una funzione PLUS")
+    _cleanup_mbox_import_jobs()
+    IMPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    upload_dir = Path(tempfile.mkdtemp(prefix="mbox-link-", dir=IMPORTS_DIR))
+    job_id = str(uuid.uuid4())
+    job = {
+        "id": job_id,
+        "user_id": user.id,
+        "status": "queued",
+        "percent": 1,
+        "detail": "Download MBOX in coda.",
+        "created_at": utcnow(),
+        "started_at": None,
+        "finished_at": None,
+        "messages": 0,
+        "error": "",
+        "account": None,
+    }
+    with MBOX_IMPORT_LOCK:
+        MBOX_IMPORT_JOBS[job_id] = job
+    thread = threading.Thread(
+        target=_run_mbox_link_import_job,
+        args=(job_id, user.id, payload, upload_dir),
+        name=f"emboxa-mbox-link-{job_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
+    return _mbox_import_job_response(job)
 
 
 @app.get("/api/import/mbox/jobs/{job_id}", dependencies=[Depends(current_user)])
