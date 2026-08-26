@@ -103,7 +103,7 @@ function accountCard(account) {
   const progress = job ? `<div class="job"><div><span>${esc(job.current_folder || statusLabel(job.status))}</span><strong>${job.status==='queued'?'In coda':`${job.percent}%`}</strong></div><div class="progress"><i style="width:${job.percent}%"></i></div><small>${job.processed_messages.toLocaleString('it-IT')} / ${job.total_messages ? job.total_messages.toLocaleString('it-IT') : '?'} messaggi · ${job.attachment_count.toLocaleString('it-IT')} allegati${job.status==='running'?` · ${job.throughput.toFixed(1)} msg/s · ETA ${duration(job.eta_seconds)}`:''}</small><button data-action="cancel" data-id="${job.id}" class="text-button danger-text">Interrompi</button></div>` : '';
   return `<article class="account-card" data-account-card="${account.id}">
       <div class="card-top"><div class="account-avatar">${microsoft?'M':mbox?'B':esc(account.display_name.charAt(0).toUpperCase())}</div><div class="account-title"><h2>${esc(account.display_name)}</h2><p>${esc(account.email)}${providerLabel}</p></div>
-      <details class="menu" data-account-menu="${account.id}" ${state.openAccountMenuId===account.id?'open':''}><summary aria-label="Azioni account ${esc(account.display_name)}" aria-haspopup="menu" aria-expanded="${state.openAccountMenuId===account.id?'true':'false'}">${icon('dots')}</summary><div role="menu">${microsoft||mbox?'':`<button role="menuitem" data-action="edit" data-id="${account.id}">Modifica IMAP</button>`}${account.imap_enabled?`<button role="menuitem" data-action="test-saved" data-id="${account.id}">Test connessione</button>`:''}${microsoft?`<button role="menuitem" data-action="disconnect-microsoft" data-id="${account.id}" class="danger-text">Scollega Microsoft</button>`:''}${!account.is_permanent?`<button role="menuitem" data-action="permanent" data-id="${account.id}">Make permanent</button>`:'<span class="permanent-label">Permanent</span>'}${account.has_archive?`<button role="menuitem" data-action="export" data-id="${account.id}">Esporta archivio</button><button role="menuitem" data-action="clear" data-id="${account.id}" class="danger-text">Cancella archivio</button>`:''}<button role="menuitem" data-action="delete" data-id="${account.id}" class="danger-text">Elimina account</button></div></details></div>
+      <details class="menu" data-account-menu="${account.id}" ${state.openAccountMenuId===account.id?'open':''}><summary aria-label="Azioni account ${esc(account.display_name)}" aria-haspopup="menu" aria-expanded="${state.openAccountMenuId===account.id?'true':'false'}">${icon('dots')}</summary><div role="menu">${microsoft||mbox?'':`<button role="menuitem" data-action="edit" data-id="${account.id}">Modifica IMAP</button>`}<button role="menuitem" data-action="retention" data-id="${account.id}">Versioni da tenere</button>${account.imap_enabled?`<button role="menuitem" data-action="test-saved" data-id="${account.id}">Test connessione</button>`:''}${microsoft?`<button role="menuitem" data-action="disconnect-microsoft" data-id="${account.id}" class="danger-text">Scollega Microsoft</button>`:''}${!account.is_permanent?`<button role="menuitem" data-action="permanent" data-id="${account.id}">Make permanent</button>`:'<span class="permanent-label">Permanent</span>'}${account.has_archive?`<button role="menuitem" data-action="export" data-id="${account.id}">Esporta archivio</button><button role="menuitem" data-action="clear" data-id="${account.id}" class="danger-text">Cancella archivio</button>`:''}<button role="menuitem" data-action="delete" data-id="${account.id}" class="danger-text">Elimina account</button></div></details></div>
       <div class="card-stats"><div><strong>${account.message_count.toLocaleString('it-IT')}</strong><span>messaggi</span></div><div><strong>${bytes(account.archive_size)}</strong><span>archivio</span></div></div>
       <div class="last-backup"><span class="status-dot ${esc(account.last_backup_status)}"></span><div><strong>${esc(statusLabel(account.last_backup_status))}</strong><small>${date(account.last_backup_at)}${account.next_backup_at ? ` · Prossimo ${date(account.next_backup_at)}` : ''}</small></div></div>
       ${account.last_backup_error ? `<p class="card-error" title="${esc(account.last_backup_error)}">${esc(account.last_backup_error)}</p>` : ''}${progress}
@@ -221,7 +221,7 @@ const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function waitForExportJob(job) {
   let current = job, visualPercent = Number(job.percent || 5);
   while (current.status === 'queued' || current.status === 'running') {
-    visualPercent = Math.min(92, Math.max(visualPercent + 3, Number(current.percent || 0)));
+    visualPercent = Math.min(99, Math.max(visualPercent + 1, Number(current.percent || 0)));
     exportProgress(current.status === 'queued' ? 'Export in coda…' : 'Export in background…', visualPercent, current.detail || 'Il server sta preparando il file senza tenere aperta la richiesta Cloudflare.');
     await wait(1500);
     current = await api(current.status_url);
@@ -269,6 +269,14 @@ document.addEventListener('click', async event => {
   try {
     if (button.dataset.action === 'edit') openAccountDialog(account);
     if (button.dataset.action === 'backup') { const result=await api(`/api/accounts/${id}/backup`, {method:'POST'}); toast(result.created?'Backup aggiunto alla coda':'Backup già in coda'); loadAccounts(true); }
+    if (button.dataset.action === 'retention') {
+      const raw = prompt('Quante versioni backup vuoi tenere per questa casella?', account.retention_versions || 3);
+      if (raw === null) return;
+      const retention = Number(raw);
+      if (!Number.isInteger(retention) || retention < 1 || retention > 100) throw new Error('Inserisci un numero tra 1 e 100');
+      await api(`/api/accounts/${id}/settings`, {method:'PATCH', body:JSON.stringify({retention_versions:retention})});
+      toast('Numero versioni aggiornato'); loadAccounts();
+    }
     if (button.dataset.action === 'cancel' && await confirmAction('Interrompere il backup?', 'Lo staging incompleto sarà eliminato. Il backup precedente resterà disponibile.')) { await api(`/api/jobs/${id}/cancel`, {method:'POST'}); toast('Interruzione richiesta'); }
     if (button.dataset.action === 'test-saved') { button.disabled=true; const result=await api(`/api/accounts/${id}/test`,{method:'POST'}); toast(`Connessione riuscita · ${result.folders} cartelle`); button.disabled=false; }
     if (button.dataset.action === 'disconnect-microsoft' && await confirmAction('Scollegare Microsoft?', 'I backup futuri si fermeranno finché non ricolleghi l’account con OAuth. Gli archivi già creati restano disponibili.')) { await api(`/api/accounts/${id}/microsoft`,{method:'DELETE'}); toast('Microsoft scollegato'); loadAccounts(); }
@@ -389,7 +397,19 @@ $('#messages-view-button').addEventListener('click',()=>showArchiveView('message
 $('#attachments-view-button').addEventListener('click',()=>showArchiveView('attachments'));
 
 function attachmentData(item){return esc(JSON.stringify(item));}
-function attachmentPreview(item){return item.category==='images'?`<img loading="lazy" src="${item.open_url}" alt="">`:`<div class="file-tile ${item.category}">${icon(item.category==='pdf'?'file':item.category==='images'?'image':'archive')}<b>${esc((item.extension||'FILE').toUpperCase())}</b></div>`;}
+function extensionLabel(item) {
+  return String(item.extension || item.filename?.split('.').pop() || item.category || 'file').replace(/[^a-z0-9]/gi,'').slice(0,5).toUpperCase() || 'FILE';
+}
+function extensionColor(label) {
+  const palette = ['#fca311','#ff6b35','#2f80ed','#20a36a','#8b5cf6','#ec4899','#06b6d4','#64748b','#ef4444','#84cc16'];
+  let hash = 0;
+  for (const char of label) hash = (hash * 31 + char.charCodeAt(0)) % palette.length;
+  return palette[hash];
+}
+function attachmentPreview(item){
+  const label = extensionLabel(item), color = extensionColor(label);
+  return `<div class="file-tile extension-tile" style="--file-color:${color}"><b>${esc(label)}</b><small>${esc(item.category||'file')}</small></div>`;
+}
 async function loadAttachments(){
   const container=$('#attachments-results'),a=state.attachments;container.innerHTML=skeleton(8);
   try{const params=new URLSearchParams({snapshot_id:state.snapshotId,page:a.page,page_size:a.pageSize,category:a.category});if(a.q)params.set('q',a.q);if(state.folderId)params.set('folder_id',state.folderId);const data=await api(`/api/accounts/${state.account.id}/attachments?${params}`);a.total=data.total;$('#attachments-count').textContent=`${data.total.toLocaleString('it-IT')} file`;container.className=`attachments-results ${a.mode}`;container.innerHTML=data.items.length?data.items.map(item=>`<article class="attachment-card">${attachmentPreview(item)}<div class="attachment-info"><h3 title="${esc(item.filename)}">${esc(item.filename)}</h3><p>${esc((item.extension||item.category).toUpperCase())} · ${bytes(item.size)}</p><dl><div><dt>From</dt><dd>${esc(item.sender||'—')}</dd></div><div><dt>Subject</dt><dd>${esc(item.subject)}</dd></div><div><dt>Folder</dt><dd>${esc(item.folder)}</dd></div><div><dt>Date</dt><dd>${date(item.date)}</dd></div></dl></div><div class="attachment-card-actions"><button class="secondary" type="button" data-view-attachment='${attachmentData(item)}'>Open</button><a class="ghost" href="${item.download_url}" download>Download</a><button class="ghost" type="button" data-show-email="${item.message_id}">Show email</button></div></article>`).join(''):`<div class="empty-list">${icon('file')}<p>Nessun allegato corrisponde ai filtri.</p></div>`;const pages=Math.max(1,Math.ceil(data.total/a.pageSize));$('#attachments-page').textContent=`${a.page} di ${pages}`;$('#attachments-prev').disabled=a.page<=1;$('#attachments-next').disabled=a.page>=pages;}catch(error){container.innerHTML=`<div class="empty-list error">${esc(error.message)}</div>`;}

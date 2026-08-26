@@ -408,6 +408,10 @@ class AccountPayload(BaseModel):
     retention_versions: int | None = Field(default=None, ge=1, le=100)
 
 
+class AccountSettingsPayload(BaseModel):
+    retention_versions: int = Field(ge=1, le=100)
+
+
 class ConnectionPayload(BaseModel):
     imap_host: str = Field(min_length=1, max_length=255)
     imap_port: int = Field(ge=1, le=65535)
@@ -1876,6 +1880,16 @@ def update_account(account_id: int, payload: AccountPayload, db: Session = Depen
     return _account_json(account, _running_job(db, account.id))
 
 
+@app.patch("/api/accounts/{account_id}/settings", dependencies=[Depends(csrf_guard)])
+def update_account_settings(account_id: int, payload: AccountSettingsPayload, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    account = _account_or_404(db, account_id)
+    if account.owner_id != user.id:
+        raise HTTPException(404, "Account non trovato")
+    account.retention_versions = payload.retention_versions
+    db.commit()
+    return _account_json(account, _running_job(db, account.id))
+
+
 @app.post("/api/accounts/{account_id}/test", dependencies=[Depends(csrf_guard)])
 def test_saved_connection(account_id: int, db: Session = Depends(get_db)):
     account = _account_or_404(db, account_id)
@@ -2058,14 +2072,45 @@ def _export_expiry(user: User, db: Session) -> datetime | None:
     return None if ttl_hours <= 0 else utcnow() + timedelta(hours=ttl_hours)
 
 
-def _create_export(account_id: int, user: User, db: Session) -> WebExport:
+def _existing_export(account: Account, user: User, db: Session) -> WebExport | None:
+    latest_backup = account.last_backup_at
+    rows = db.scalars(
+        select(WebExport)
+        .where(
+            WebExport.owner_id == user.id,
+            WebExport.account_id == account.id,
+            (WebExport.expires_at.is_(None) | (WebExport.expires_at > utcnow())),
+        )
+        .order_by(WebExport.id.desc())
+    ).all()
+    for item in rows:
+        path = safe_resolve(EXPORTS_DIR, item.relpath)
+        if not path.is_file():
+            continue
+        if latest_backup and datetime.fromtimestamp(path.stat().st_mtime) < latest_backup:
+            continue
+        return item
+    return None
+
+
+def _create_export(account_id: int, user: User, db: Session, progress=None) -> WebExport:
     account = _account_or_404(db, account_id)
     if account.owner_id != user.id:
         raise HTTPException(404, "Account non trovato")
+    existing = _existing_export(account, user, db)
+    if existing:
+        if progress:
+            progress(96, "Uso l'export già pronto più recente.")
+        return existing
     if user.plan != "PLUS" and _storage_used(db, user.id) + _active_export_size(db, user.id) + account.archive_size > user.storage_limit_bytes:
         raise HTTPException(409, f"Storage limit reached. Contact the administrator at {_contact_email()}")
     try:
-        path, filename = build_export(account_id)
+        try:
+            path, filename = build_export(account_id, progress=progress)
+        except TypeError as exc:
+            if "progress" not in str(exc):
+                raise
+            path, filename = build_export(account_id)
     except ArchiveError as exc:
         raise HTTPException(400, str(exc)) from exc
     export_max = get_int_setting("export_max_bytes", 10 * 1024**3, db)
@@ -2143,8 +2188,10 @@ def _run_export_job(job_id: str, user_id: int, account_id: int) -> None:
             user = db.get(User, user_id)
             if not user or user.status != "active" or not user.verified_at:
                 raise HTTPException(403, "Account is not available")
+            def progress(percent: int, detail: str) -> None:
+                _set_export_job(job_id, percent=percent, detail=detail)
             _set_export_job(job_id, percent=18, detail="Creazione del pacchetto .mailvault sul server.")
-            item = _create_export(account_id, user, db)
+            item = _create_export(account_id, user, db, progress=progress)
             _set_export_job(
                 job_id,
                 status="completed",

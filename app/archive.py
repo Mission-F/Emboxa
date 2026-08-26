@@ -8,6 +8,7 @@ import uuid
 import zipfile
 from datetime import datetime
 from pathlib import Path, PurePosixPath
+from typing import Callable
 
 from sqlalchemy import select, text
 
@@ -48,7 +49,18 @@ def _write_jsonl(path: Path, rows) -> None:
             handle.write(json.dumps(row, ensure_ascii=False, separators=(",", ":")) + "\n")
 
 
-def build_export(account_id: int) -> tuple[Path, str]:
+def _write_file_to_zip(bundle: zipfile.ZipFile, path: Path, arcname: str, chunk_size: int = 1024 * 1024) -> tuple[str, int]:
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as source, bundle.open(arcname, "w") as target:
+        while chunk := source.read(chunk_size):
+            digest.update(chunk)
+            size += len(chunk)
+            target.write(chunk)
+    return digest.hexdigest(), size
+
+
+def build_export(account_id: int, progress: Callable[[int, str], None] | None = None) -> tuple[Path, str]:
     EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
     db = SessionLocal()
     temp_dir = Path(tempfile.mkdtemp(prefix="mailvault-export-", dir=EXPORTS_DIR))
@@ -62,6 +74,8 @@ def build_export(account_id: int) -> tuple[Path, str]:
         source_root = snapshot_root(account.archive_uuid, snapshot.snapshot_uuid)
         if not source_root.is_dir():
             raise ArchiveError("I file dello snapshot non sono disponibili")
+        if progress:
+            progress(20, "Scrittura metadati export.")
 
         folders_path = temp_dir / "folders.jsonl"
         messages_path = temp_dir / "messages.jsonl"
@@ -140,8 +154,8 @@ def build_export(account_id: int) -> tuple[Path, str]:
         with zipfile.ZipFile(export_path, "w", compression=zipfile.ZIP_STORED, allowZip64=True) as bundle:
             for metadata_path in (folders_path, messages_path, attachments_path):
                 arcname = f"metadata/{metadata_path.name}"
-                checksum_lines.append(f"{_hash_file(metadata_path)}  {arcname}")
-                bundle.write(metadata_path, arcname)
+                digest, _size = _write_file_to_zip(bundle, metadata_path, arcname)
+                checksum_lines.append(f"{digest}  {arcname}")
 
             relpaths = set(db.scalars(
                 select(Message.raw_relpath)
@@ -154,17 +168,24 @@ def build_export(account_id: int) -> tuple[Path, str]:
                 .where(Message.snapshot_id == snapshot.id, Message.is_deleted.is_(False))
                 .distinct()
             ).all())
+            ordered_relpaths = sorted(path for path in relpaths if path)
             exported_size = 0
-            for relpath in sorted(path for path in relpaths if path):
+            total_files = max(1, len(ordered_relpaths))
+            for index, relpath in enumerate(ordered_relpaths, 1):
                 source = safe_resolve(source_root, relpath)
                 if not source.is_file():
                     raise ArchiveError(f"File archivio mancante: {relpath}")
-                exported_size += source.stat().st_size
                 arcname = f"files/{PurePosixPath(relpath).as_posix()}"
-                checksum_lines.append(f"{_hash_file(source)}  {arcname}")
-                bundle.write(source, arcname)
+                digest, size = _write_file_to_zip(bundle, source, arcname)
+                exported_size += size
+                checksum_lines.append(f"{digest}  {arcname}")
+                if progress and (index == total_files or index % 250 == 0):
+                    percent = 25 + int(index / total_files * 68)
+                    progress(min(93, percent), f"Impacchettati {index}/{total_files} file ({exported_size / 1024**2:.0f} MB).")
 
             checksums = ("\n".join(checksum_lines) + "\n").encode()
+            if progress:
+                progress(95, "Scrittura indice integrità e manifest.")
             manifest = {
                 "format": FORMAT_NAME,
                 "format_version": FORMAT_VERSION,
