@@ -101,10 +101,10 @@
       <input name="account_id" type="hidden">
       <div class="form-section"><span class="step-number">1</span><div><h3>Identità</h3><p>Come riconoscere questa casella nell’archivio.</p></div></div>
       <div class="form-grid"><label>Nome visualizzato<input name="display_name" maxlength="200" required></label><label>Indirizzo email<input name="email" type="email" required></label></div>
-      <div class="form-section"><span class="step-number">2</span><div><h3>Accesso casella</h3><p>Per Microsoft usa OAuth: nessuna password Outlook viene salvata in EMBOXA.</p></div></div>
-      <div class="oauth-connect"><button id="microsoft-connect" class="secondary wide" type="button">Continua con Microsoft</button><small>Outlook, Hotmail, Live e Microsoft 365 via Microsoft Graph.</small></div>
+      <div class="form-section"><span class="step-number">2</span><div><h3>Accesso casella</h3><p>Scegli il provider. Per Microsoft puoi usare OAuth senza inserire password in EMBOXA.</p></div></div>
       <div class="form-grid">
         <label>Provider<select id="provider-preset"><option value="">Personalizzato</option><option value="gmail">Gmail</option><option value="outlook">Outlook / Microsoft 365</option><option value="icloud">iCloud Mail</option><option value="yahoo">Yahoo Mail</option></select></label>
+        <div id="microsoft-oauth-box" class="oauth-connect hidden"><div><b>Microsoft OAuth</b><small>Outlook, Hotmail, Live e Microsoft 365 via Graph.</small></div><button id="microsoft-connect" class="secondary" type="button">Continua</button></div>
         <label>Server IMAP<input name="imap_host" maxlength="255" required></label>
         <label>Porta<input name="imap_port" type="number" min="1" max="65535" value="993" required></label>
         <label>Sicurezza<select name="security"><option value="ssl">SSL/TLS</option><option value="starttls">STARTTLS</option><option value="plain">Nessuna (sconsigliata)</option></select></label>

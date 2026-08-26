@@ -147,6 +147,7 @@ $('#account-grid').addEventListener('toggle', event => {
 
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && state.openAccountMenuId !== null) { event.preventDefault(); closeAccountMenus({restoreFocus:true}); } });
 $('#microsoft-connect')?.addEventListener('click', () => { location.href = '/api/auth/microsoft/start'; });
+function syncMicrosoftOAuthBox() { $('#microsoft-oauth-box')?.classList.toggle('hidden', $('#provider-preset')?.value !== 'outlook'); }
 
 function accountPayload(form) {
   const data = Object.fromEntries(new FormData(form));
@@ -165,6 +166,7 @@ function openAccountDialog(account = null) {
   else { form.imap_port.value = 993; form.security.value = 'ssl'; }
   $('.advanced-settings').open = Boolean(account?.root_folder || (account?.schedule_mode && account.schedule_mode !== 'disabled'));
   $('#interval-label').classList.toggle('hidden', form.schedule_mode.value !== 'interval');
+  syncMicrosoftOAuthBox();
   const status = $('#account-form-status'); status.textContent = ''; status.className = 'form-status';
   $('#account-dialog').showModal();
 }
@@ -296,6 +298,7 @@ $('#test-connection').addEventListener('click', async () => {
   } catch(error){status.textContent=`Connessione non riuscita. ${error.message}`;status.className='form-status error';}
 });
 $('#provider-preset').addEventListener('change', event => {
+  syncMicrosoftOAuthBox();
   const presets={gmail:['imap.gmail.com',993,'ssl'],outlook:['outlook.office365.com',993,'ssl'],icloud:['imap.mail.me.com',993,'ssl'],yahoo:['imap.mail.yahoo.com',993,'ssl']};
   const value=presets[event.target.value]; if(value){const form=$('#account-form');form.imap_host.value=value[0];form.imap_port.value=value[1];form.security.value=value[2];}
 });
