@@ -107,6 +107,8 @@ async def lifespan(_app: FastAPI):
                         verified_at=utcnow(), role="admin", plan="PLUS", storage_limit_bytes=0))
             db.commit()
             log.info("Initial Web administrator created")
+        for account in db.scalars(select(Account)).all():
+            rotate_versions(db, account)
     recover_interrupted_jobs()
     recover_interrupted_transfers()
     scheduler.start()
@@ -1871,6 +1873,7 @@ def update_account_settings(account_id: int, payload: AccountSettingsPayload, us
         raise HTTPException(404, "Account non trovato")
     account.retention_versions = payload.retention_versions
     db.commit()
+    rotate_versions(db, account)
     return _account_json(account, _running_job(db, account.id), db)
 
 

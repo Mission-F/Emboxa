@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .config import ARCHIVES_DIR
@@ -42,26 +42,35 @@ def account_active_archive_size(db: Session, account: Account) -> int:
     return snapshot_disk_size(account, snapshot)
 
 
-def account_storage_used(db: Session, account: Account) -> int:
+def retained_snapshots(db: Session, account: Account) -> list[Snapshot]:
     snapshots = db.scalars(
-        select(Snapshot).where(Snapshot.account_id == account.id, Snapshot.status.in_(["completed", "active"]))
+        select(Snapshot)
+        .where(
+            Snapshot.account_id == account.id,
+            Snapshot.status.in_(["completed", "active"]),
+            or_(Snapshot.id == account.active_snapshot_id, Snapshot.protected.is_(True)),
+        )
+        .order_by(Snapshot.completed_at.desc(), Snapshot.id.desc())
     ).all()
-    return int(sum(snapshot_disk_size(account, snapshot) for snapshot in snapshots))
+    if snapshots:
+        return snapshots
+    fallback = db.scalar(
+        select(Snapshot)
+        .where(Snapshot.account_id == account.id, Snapshot.status.in_(["completed", "active"]))
+        .order_by(Snapshot.completed_at.desc(), Snapshot.id.desc())
+    )
+    return [fallback] if fallback else []
+
+
+def account_storage_used(db: Session, account: Account) -> int:
+    return int(sum(snapshot_disk_size(account, snapshot) for snapshot in retained_snapshots(db, account)))
 
 
 def user_storage_used(db: Session, user_id: int) -> int:
-    rows = db.execute(
-        select(Account, Snapshot)
-        .join(Snapshot, Snapshot.account_id == Account.id)
-        .where(Account.owner_id == user_id, Snapshot.status.in_(["completed", "active"]))
-    ).all()
-    return int(sum(snapshot_disk_size(account, snapshot) for account, snapshot in rows))
+    accounts = db.scalars(select(Account).where(Account.owner_id == user_id)).all()
+    return int(sum(account_storage_used(db, account) for account in accounts))
 
 
 def total_archive_storage_used(db: Session) -> int:
-    rows = db.execute(
-        select(Account, Snapshot)
-        .join(Snapshot, Snapshot.account_id == Account.id)
-        .where(Snapshot.status.in_(["completed", "active"]))
-    ).all()
-    return int(sum(snapshot_disk_size(account, snapshot) for account, snapshot in rows))
+    accounts = db.scalars(select(Account)).all()
+    return int(sum(account_storage_used(db, account) for account in accounts))
