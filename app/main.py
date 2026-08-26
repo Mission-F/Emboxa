@@ -31,7 +31,6 @@ from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask
-from starlette.concurrency import run_in_threadpool
 from starlette.middleware.sessions import SessionMiddleware
 from webauthn import (
     base64url_to_bytes,
@@ -53,6 +52,7 @@ from .archive import ArchiveError, build_export, clear_account_archive, delete_a
 from .backup import backup_manager, next_backup_time, recover_interrupted_jobs, rotate_versions, snapshot_root
 from .config import (
     ADMIN_EMAIL, ADMIN_PASSWORD, ARCHIVES_DIR, COOKIE_SECURE, DATA_DIR, EXPORTS_DIR, EXPORT_TTL_HOURS, IMPORTS_DIR, IMPORT_MAX_BYTES,
+    LOCAL_EXPORTS_DIR, LOCAL_IMPORTS_DIR,
     GOOGLE_ANALYTICS_ID, LEGAL_CONTACT_EMAIL,
     LOG_LEVEL, PERMANENT_MAILBOX_LOCK_DAYS, PUBLIC_APP_URL, PUBLIC_SITE_URL, SMTP_FROM_EMAIL, SMTP_FROM_NAME,
     SMTP_HOST, SMTP_PASSWORD, SMTP_PORT, SMTP_SECURITY, SMTP_USERNAME, STANDARD_MAILBOX_LIMIT,
@@ -447,6 +447,16 @@ class MboxLinkPayload(BaseModel):
     url: str = Field(min_length=8, max_length=2048)
     display_name: str = Field(default="Archivio MBOX importato", min_length=1, max_length=200)
     email: str = Field(default="mbox-import@local.invalid", max_length=320)
+
+
+class ImportLinkPayload(BaseModel):
+    url: str = Field(min_length=8, max_length=2048)
+
+
+class LocalImportPayload(BaseModel):
+    mode: Literal["auto", "mailvault", "mbox"] = "auto"
+    display_name: str = Field(default="Import NAS", min_length=1, max_length=200)
+    email: str = Field(default="nas-import@local.invalid", max_length=320)
 
 
 @app.get("/api/health")
@@ -2139,6 +2149,8 @@ def _export_job_response(job: dict) -> dict:
         response["error"] = job["error"]
     if job.get("export"):
         response["export"] = job["export"]
+    if job.get("local_path"):
+        response["local_path"] = job["local_path"]
     return response
 
 
@@ -2174,6 +2186,45 @@ def _run_export_job(job_id: str, user_id: int, account_id: int) -> None:
         _set_export_job(job_id, status="failed", percent=100, detail=detail, error=detail, finished_at=utcnow())
 
 
+def _run_export_local_job(job_id: str, user_id: int, account_id: int) -> None:
+    _set_export_job(job_id, status="running", percent=12, detail="Export locale NAS avviato.", started_at=utcnow())
+    try:
+        with SessionLocal() as db:
+            user = db.get(User, user_id)
+            if not user or user.status != "active" or not user.verified_at:
+                raise HTTPException(403, "Account is not available")
+            if user.plan != "PLUS" and user.role != "admin":
+                raise HTTPException(403, "Export su cartella NAS disponibile per PLUS/admin")
+
+            def progress(percent: int, detail: str) -> None:
+                _set_export_job(job_id, percent=min(82, percent), detail=detail)
+
+            item = _create_export(account_id, user, db, progress=progress)
+            source = safe_resolve(EXPORTS_DIR, item.relpath)
+            if not source.is_file():
+                raise ArchiveError("Export non disponibile sul server")
+            LOCAL_EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
+            destination = LOCAL_EXPORTS_DIR / item.filename
+            if destination.exists():
+                stem, suffix = destination.stem, destination.suffix
+                destination = LOCAL_EXPORTS_DIR / f"{stem}-{utcnow().strftime('%Y%m%d-%H%M%S')}{suffix}"
+            _set_export_job(job_id, percent=88, detail="Copia del file nella cartella locale NAS…")
+            shutil.copy2(source, destination)
+            _set_export_job(
+                job_id,
+                status="completed",
+                percent=100,
+                detail=f"Export salvato su NAS: {destination}",
+                export=_export_payload(item),
+                local_path=str(destination),
+                finished_at=utcnow(),
+            )
+    except Exception as exc:
+        detail = getattr(exc, "detail", None) or str(exc) or "Export failed"
+        log.warning("Local export job %s failed: %s", job_id, detail)
+        _set_export_job(job_id, status="failed", percent=100, detail=detail, error=detail, finished_at=utcnow())
+
+
 def _start_export_job(account_id: int, user: User, db: Session) -> dict:
     _cleanup_export_jobs()
     account = _account_or_404(db, account_id)
@@ -2206,9 +2257,43 @@ def _start_export_job(account_id: int, user: User, db: Session) -> dict:
     return job
 
 
+def _start_export_local_job(account_id: int, user: User, db: Session) -> dict:
+    if user.plan != "PLUS" and user.role != "admin":
+        raise HTTPException(403, "Export su cartella NAS disponibile per PLUS/admin")
+    account = _account_or_404(db, account_id)
+    if account.owner_id != user.id:
+        raise HTTPException(404, "Account non trovato")
+    _cleanup_export_jobs()
+    with EXPORT_JOB_LOCK:
+        job_id = str(uuid.uuid4())
+        job = {
+            "id": job_id,
+            "user_id": user.id,
+            "account_id": account_id,
+            "status": "queued",
+            "percent": 5,
+            "detail": "Export su cartella NAS aggiunto alla coda.",
+            "created_at": utcnow(),
+            "started_at": None,
+            "finished_at": None,
+            "error": "",
+            "export": None,
+            "local_path": None,
+        }
+        EXPORT_JOBS[job_id] = job
+    thread = threading.Thread(target=_run_export_local_job, args=(job_id, user.id, account_id), name=f"emboxa-export-local-{job_id[:8]}", daemon=True)
+    thread.start()
+    return job
+
+
 @app.post("/api/accounts/{account_id}/export", dependencies=[Depends(csrf_guard)])
 def create_export(account_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
     return _export_job_response(_start_export_job(account_id, user, db))
+
+
+@app.post("/api/accounts/{account_id}/export/local", dependencies=[Depends(csrf_guard)])
+def create_local_export(account_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return _export_job_response(_start_export_local_job(account_id, user, db))
 
 
 @app.get("/api/accounts/{account_id}/export", dependencies=[Depends(current_user)])
@@ -2499,6 +2584,242 @@ def mbox_import_job_status(job_id: str, user: User = Depends(current_user)):
         return _mbox_import_job_response(dict(job))
 
 
+IMPORT_JOB_LOCK = threading.Lock()
+IMPORT_JOBS: dict[str, dict] = {}
+IMPORT_JOB_RETENTION = timedelta(hours=6)
+
+
+def _cleanup_import_jobs() -> None:
+    cutoff = utcnow() - IMPORT_JOB_RETENTION
+    with IMPORT_JOB_LOCK:
+        for job_id, job in list(IMPORT_JOBS.items()):
+            finished_at = job.get("finished_at")
+            if finished_at and finished_at < cutoff:
+                IMPORT_JOBS.pop(job_id, None)
+
+
+def _import_job_response(job: dict) -> dict:
+    response = {
+        "job_id": job["id"],
+        "status": job["status"],
+        "percent": job["percent"],
+        "detail": job["detail"],
+        "status_url": f"/api/import/jobs/{job['id']}",
+        "created_at": job["created_at"],
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+    }
+    if job.get("error"):
+        response["error"] = job["error"]
+    if job.get("account_id"):
+        response["account_id"] = job["account_id"]
+    if job.get("account_ids"):
+        response["account_ids"] = job["account_ids"]
+    return response
+
+
+def _set_import_job(job_id: str, **changes) -> None:
+    with IMPORT_JOB_LOCK:
+        job = IMPORT_JOBS.get(job_id)
+        if job:
+            job.update(changes)
+
+
+def _run_mailvault_link_import_job(job_id: str, user_id: int, url: str, temp_path: Path) -> None:
+    _set_import_job(job_id, status="running", percent=3, detail="Download archivio dal link…", started_at=utcnow())
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ArchiveError("Inserisci un link http/https diretto a un file .mailvault")
+        request = URLRequest(url, headers={"User-Agent": "Emboxa-Web/1.0"})
+        with urlopen(request, timeout=60) as response:
+            status = getattr(response, "status", 200)
+            if status >= 400:
+                raise ArchiveError(f"Download non riuscito: HTTP {status}")
+            total = int(response.headers.get("content-length") or 0)
+            downloaded = 0
+            with temp_path.open("wb") as target:
+                while chunk := response.read(1024 * 1024):
+                    downloaded += len(chunk)
+                    if downloaded > IMPORT_MAX_BYTES:
+                        raise ArchiveError("Il file supera il limite di import configurato")
+                    target.write(chunk)
+                    if total:
+                        percent = 3 + int(min(62, downloaded / max(1, total) * 62))
+                        detail = f"Download archivio · {downloaded / 1024**2:.1f} MB / {total / 1024**2:.1f} MB"
+                    else:
+                        percent = 20
+                        detail = f"Download archivio · {downloaded / 1024**2:.1f} MB"
+                    _set_import_job(job_id, percent=percent, detail=detail)
+        if not temp_path.exists() or temp_path.stat().st_size == 0:
+            raise ArchiveError("Il link non ha scaricato un archivio valido")
+        _set_import_job(job_id, percent=72, detail="Verifica e importazione del pacchetto .mailvault…")
+        account_id = import_archive(temp_path, user_id)
+        _set_import_job(job_id, status="completed", percent=100, detail="Archivio importato.", account_id=account_id, finished_at=utcnow())
+    except Exception as exc:
+        detail = getattr(exc, "detail", None) or str(exc) or "Import failed"
+        log.warning("Mailvault link import job %s failed: %s", job_id, detail)
+        _set_import_job(job_id, status="failed", percent=100, detail=detail, error=detail, finished_at=utcnow())
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def _run_mailvault_upload_import_job(job_id: str, user_id: int, temp_path: Path) -> None:
+    _set_import_job(job_id, status="running", percent=74, detail="Verifica e importazione del pacchetto .mailvault…", started_at=utcnow())
+    try:
+        account_id = import_archive(temp_path, user_id)
+        _set_import_job(job_id, status="completed", percent=100, detail="Archivio importato.", account_id=account_id, account_ids=[account_id], finished_at=utcnow())
+    except Exception as exc:
+        detail = getattr(exc, "detail", None) or str(exc) or "Import failed"
+        log.warning("Mailvault upload import job %s failed: %s", job_id, detail)
+        _set_import_job(job_id, status="failed", percent=100, detail=detail, error=detail, finished_at=utcnow())
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def _local_mailvault_files() -> list[Path]:
+    if not LOCAL_IMPORTS_DIR.is_dir():
+        return []
+    return sorted(path for path in LOCAL_IMPORTS_DIR.rglob("*.mailvault") if path.is_file())
+
+
+def _local_mbox_sources() -> list[MboxSource]:
+    if not LOCAL_IMPORTS_DIR.is_dir():
+        return []
+    sources: list[MboxSource] = []
+    for path in sorted(LOCAL_IMPORTS_DIR.rglob("*")):
+        if not path.is_file() or path.name.lower() in {".ds_store", "table_of_contents"}:
+            continue
+        rel = path.relative_to(LOCAL_IMPORTS_DIR).as_posix()
+        if _is_mbox_upload(rel):
+            sources.append(MboxSource(path, rel, folder_name_from_upload(rel)))
+    return sources
+
+
+def _run_local_import_job(job_id: str, user_id: int, payload: LocalImportPayload) -> None:
+    _set_import_job(job_id, status="running", percent=3, detail=f"Scansione cartella NAS {LOCAL_IMPORTS_DIR}…", started_at=utcnow())
+    try:
+        imported: list[int] = []
+        mailvaults = _local_mailvault_files() if payload.mode in {"auto", "mailvault"} else []
+        mbox_sources = _local_mbox_sources() if payload.mode in {"auto", "mbox"} else []
+        total_steps = len(mailvaults) + (1 if mbox_sources else 0)
+        if not total_steps:
+            raise ArchiveError(f"Nessun file importabile trovato in {LOCAL_IMPORTS_DIR}")
+
+        done = 0
+        for path in mailvaults:
+            done += 1
+            percent = 5 + int((done - 1) / max(1, total_steps) * 90)
+            _set_import_job(job_id, percent=percent, detail=f"Import .mailvault da NAS: {path.name}")
+            imported.append(import_archive(path, user_id))
+
+        if mbox_sources:
+            def progress(percent: int, messages: int, folder: str) -> None:
+                base = 5 + int(done / max(1, total_steps) * 90)
+                span = max(1, int(90 / max(1, total_steps)))
+                mapped = min(98, base + int(percent / 100 * span))
+                _set_import_job(job_id, percent=mapped, detail=f"{folder} · {messages} messaggi importati")
+
+            imported.append(import_mbox_sources(
+                mbox_sources,
+                user_id,
+                display_name=payload.display_name,
+                email=payload.email,
+                progress=progress,
+            ))
+
+        _set_import_job(
+            job_id,
+            status="completed",
+            percent=100,
+            detail=f"Import da cartella NAS completato · {len(imported)} archivio/i creati.",
+            account_id=imported[-1] if imported else None,
+            account_ids=imported,
+            finished_at=utcnow(),
+        )
+    except Exception as exc:
+        detail = getattr(exc, "detail", None) or str(exc) or "Import failed"
+        log.warning("Local folder import job %s failed: %s", job_id, detail)
+        _set_import_job(job_id, status="failed", percent=100, detail=detail, error=detail, finished_at=utcnow())
+
+
+@app.post("/api/import/link", dependencies=[Depends(csrf_guard)])
+def link_import(payload: ImportLinkPayload, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if user.plan != "PLUS" and (db.scalar(select(func.count(Account.id)).where(Account.owner_id == user.id)) or 0) >= get_int_setting("standard_mailbox_limit", STANDARD_MAILBOX_LIMIT, db):
+        raise HTTPException(409, "Mailbox limit reached")
+    _cleanup_import_jobs()
+    IMPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    descriptor, temp_name = tempfile.mkstemp(prefix="link-", suffix=".mailvault", dir=IMPORTS_DIR)
+    os.close(descriptor)
+    temp_path = Path(temp_name)
+    job_id = str(uuid.uuid4())
+    job = {
+        "id": job_id,
+        "user_id": user.id,
+        "status": "queued",
+        "percent": 1,
+        "detail": "Download archivio in coda.",
+        "created_at": utcnow(),
+        "started_at": None,
+        "finished_at": None,
+        "account_id": None,
+        "error": "",
+    }
+    with IMPORT_JOB_LOCK:
+        IMPORT_JOBS[job_id] = job
+    thread = threading.Thread(
+        target=_run_mailvault_link_import_job,
+        args=(job_id, user.id, payload.url, temp_path),
+        name=f"emboxa-import-link-{job_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
+    return _import_job_response(job)
+
+
+@app.post("/api/import/local", dependencies=[Depends(csrf_guard)])
+def local_import(payload: LocalImportPayload, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if user.plan != "PLUS" and user.role != "admin":
+        raise HTTPException(403, "Import da cartella NAS disponibile per PLUS/admin")
+    if user.plan != "PLUS" and (db.scalar(select(func.count(Account.id)).where(Account.owner_id == user.id)) or 0) >= get_int_setting("standard_mailbox_limit", STANDARD_MAILBOX_LIMIT, db):
+        raise HTTPException(409, "Mailbox limit reached")
+    _cleanup_import_jobs()
+    LOCAL_IMPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    job_id = str(uuid.uuid4())
+    job = {
+        "id": job_id,
+        "user_id": user.id,
+        "status": "queued",
+        "percent": 1,
+        "detail": f"Import da cartella NAS in coda: {LOCAL_IMPORTS_DIR}",
+        "created_at": utcnow(),
+        "started_at": None,
+        "finished_at": None,
+        "account_id": None,
+        "account_ids": [],
+        "error": "",
+    }
+    with IMPORT_JOB_LOCK:
+        IMPORT_JOBS[job_id] = job
+    thread = threading.Thread(
+        target=_run_local_import_job,
+        args=(job_id, user.id, payload),
+        name=f"emboxa-import-local-{job_id[:8]}",
+        daemon=True,
+    )
+    thread.start()
+    return _import_job_response(job)
+
+
+@app.get("/api/import/jobs/{job_id}", dependencies=[Depends(current_user)])
+def import_job_status(job_id: str, user: User = Depends(current_user)):
+    with IMPORT_JOB_LOCK:
+        job = IMPORT_JOBS.get(job_id)
+        if not job or job["user_id"] != user.id:
+            raise HTTPException(404, "Import job not found")
+        return _import_job_response(dict(job))
+
+
 @app.post("/api/import", dependencies=[Depends(csrf_guard)])
 async def upload_import(file: Annotated[UploadFile, File()], user: User = Depends(current_user), db: Session = Depends(get_db)):
     if user.plan != "PLUS" and (db.scalar(select(func.count(Account.id)).where(Account.owner_id == user.id)) or 0) >= get_int_setting("standard_mailbox_limit", STANDARD_MAILBOX_LIMIT, db):
@@ -2510,6 +2831,7 @@ async def upload_import(file: Annotated[UploadFile, File()], user: User = Depend
     os.close(descriptor)
     temp_path = Path(temp_name)
     size = 0
+    keep_for_job = False
     try:
         with temp_path.open("wb") as target:
             while chunk := await file.read(1024 * 1024):
@@ -2517,13 +2839,35 @@ async def upload_import(file: Annotated[UploadFile, File()], user: User = Depend
                 if size > IMPORT_MAX_BYTES:
                     raise HTTPException(413, "Il file supera il limite di import configurato")
                 target.write(chunk)
-        try:
-            account_id = await run_in_threadpool(import_archive, temp_path, user.id)
-        except ArchiveError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        return {"ok": True, "account_id": account_id}
+        _cleanup_import_jobs()
+        job_id = str(uuid.uuid4())
+        job = {
+            "id": job_id,
+            "user_id": user.id,
+            "status": "queued",
+            "percent": 72,
+            "detail": "Upload completato. Import in coda.",
+            "created_at": utcnow(),
+            "started_at": None,
+            "finished_at": None,
+            "account_id": None,
+            "account_ids": [],
+            "error": "",
+        }
+        with IMPORT_JOB_LOCK:
+            IMPORT_JOBS[job_id] = job
+        keep_for_job = True
+        thread = threading.Thread(
+            target=_run_mailvault_upload_import_job,
+            args=(job_id, user.id, temp_path),
+            name=f"emboxa-import-upload-{job_id[:8]}",
+            daemon=True,
+        )
+        thread.start()
+        return _import_job_response(job)
     finally:
-        temp_path.unlink(missing_ok=True)
+        if not keep_for_job:
+            temp_path.unlink(missing_ok=True)
         await file.close()
 
 

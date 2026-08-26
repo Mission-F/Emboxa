@@ -72,6 +72,19 @@ def wait_mbox_import(client: TestClient, job: dict) -> dict:
     raise AssertionError("mbox import job did not complete")
 
 
+def wait_archive_import(client: TestClient, job: dict) -> dict:
+    for _ in range(80):
+        status = client.get(job["status_url"])
+        assert status.status_code == 200, status.text
+        payload = status.json()
+        if payload["status"] == "completed":
+            return payload
+        if payload["status"] == "failed":
+            raise AssertionError(payload.get("error") or payload.get("detail"))
+        time.sleep(0.05)
+    raise AssertionError("archive import job did not complete")
+
+
 def test_passkey_registration_login_and_delete(monkeypatch):
     class FakeOptions:
         def __init__(self, challenge: bytes, allow_credentials=None):
@@ -273,6 +286,72 @@ def test_mbox_import_from_link_downloads_server_side(monkeypatch):
         account = wait_mbox_import(client, response.json())
         assert account["display_name"] == "Linked MBOX"
         assert downloaded["url"] == "https://example.com/linked.mbox"
+
+
+def test_mailvault_upload_link_local_import_and_local_export(monkeypatch, tmp_path):
+    with SessionLocal() as db:
+        user = User(username="archive-ops@example.com", email="archive-ops@example.com",
+                    password_hash=hash_password("secure-archive-ops-password"), verified_at=utcnow(),
+                    plan="PLUS", storage_limit_bytes=0)
+        db.add(user); db.flush()
+        account = Account(owner_id=user.id, archive_uuid="00000000-0000-0000-0000-000000000388",
+                          display_name="Exportable", email="exportable@example.com",
+                          imap_enabled=False, mailbox_identity="exportable", archive_size=64)
+        db.add(account); db.commit(); user_id = user.id; account_id = account.id
+
+    imported_paths: list[str] = []
+
+    def fake_import_archive(path, owner_id):
+        assert owner_id == user_id
+        imported_paths.append(Path(path).name)
+        with SessionLocal() as db:
+            imported = Account(owner_id=owner_id, archive_uuid=f"00000000-0000-0000-0000-00000000039{len(imported_paths)}",
+                               display_name=f"Imported {len(imported_paths)}", email="imported@example.com",
+                               imap_enabled=False, mailbox_identity=f"imported-{len(imported_paths)}")
+            db.add(imported); db.commit()
+            return imported.id
+
+    monkeypatch.setattr(main, "import_archive", fake_import_archive)
+
+    class FakeResponse:
+        status = 200
+        headers = {"content-length": "15"}
+
+        def __init__(self):
+            self._chunks = [b"mailvault-bytes"]
+
+        def __enter__(self): return self
+        def __exit__(self, *_args): return False
+        def read(self, _size): return self._chunks.pop(0) if self._chunks else b""
+
+    monkeypatch.setattr(main, "urlopen", lambda request, timeout=60: FakeResponse())
+    local_imports = tmp_path / "local-imports"; local_imports.mkdir()
+    (local_imports / "drop.mailvault").write_bytes(b"drop")
+    local_exports = tmp_path / "local-exports"
+    monkeypatch.setattr(main, "LOCAL_IMPORTS_DIR", local_imports)
+    monkeypatch.setattr(main, "LOCAL_EXPORTS_DIR", local_exports)
+    monkeypatch.setattr(main, "build_export", lambda _account_id, progress=None: fake_export_file("ops.mailvault", b"ops-export"))
+
+    with TestClient(app) as client:
+        headers = login(client, "archive-ops@example.com", "secure-archive-ops-password")
+
+        upload = client.post("/api/import", files={"file": ("upload.mailvault", b"upload", "application/octet-stream")}, headers=headers)
+        assert upload.status_code == 200, upload.text
+        assert wait_archive_import(client, upload.json())["account_id"]
+
+        link = client.post("/api/import/link", json={"url": "https://example.com/archive.mailvault"}, headers=headers)
+        assert link.status_code == 200, link.text
+        assert wait_archive_import(client, link.json())["account_id"]
+
+        local = client.post("/api/import/local", json={"mode": "mailvault"}, headers=headers)
+        assert local.status_code == 200, local.text
+        assert wait_archive_import(client, local.json())["account_ids"]
+
+        export = client.post(f"/api/accounts/{account_id}/export/local", headers=headers)
+        assert export.status_code == 200, export.text
+        result = wait_export(client, export.json())
+        assert result["filename"] == "ops.mailvault"
+        assert (local_exports / "ops.mailvault").read_bytes() == b"ops-export"
 
 
 def test_web_multitenant_plans_retention_cleanup_telegram_and_public(monkeypatch):

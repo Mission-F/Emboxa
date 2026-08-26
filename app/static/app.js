@@ -15,6 +15,9 @@ const iconPaths = {
   chevronDown: '<path d="m6 9 6 6 6-6"/>',
   arrowLeft: '<path d="m15 18-6-6 6-6"/>',
   file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/>',
+  link: '<path d="M10 13a5 5 0 0 0 7.1 0l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1"/><path d="M14 11a5 5 0 0 0-7.1 0l-2 2a5 5 0 0 0 7.1 7.1l1.1-1.1"/>',
+  upload: '<path d="M12 3v12m0 0 4-4m-4 4-4-4M5 17v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/>',
+  server: '<rect x="4" y="4" width="16" height="6" rx="2"/><rect x="4" y="14" width="16" height="6" rx="2"/><path d="M8 7h.01M8 17h.01"/>',
   image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 15-5-5L5 20"/>',
   mail: '<path d="M4 7.5 12 13l8-5.5M5 6h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2Z"/>'
 };
@@ -103,7 +106,7 @@ function accountCard(account) {
   const progress = job ? `<div class="job"><div><span>${esc(job.current_folder || statusLabel(job.status))}</span><strong>${job.status==='queued'?'In coda':`${job.percent}%`}</strong></div><div class="progress"><i style="width:${job.percent}%"></i></div><small>${job.processed_messages.toLocaleString('it-IT')} / ${job.total_messages ? job.total_messages.toLocaleString('it-IT') : '?'} messaggi · ${job.attachment_count.toLocaleString('it-IT')} allegati${job.status==='running'?` · ${job.throughput.toFixed(1)} msg/s · ETA ${duration(job.eta_seconds)}`:''}</small><button data-action="cancel" data-id="${job.id}" class="text-button danger-text">Interrompi</button></div>` : '';
   return `<article class="account-card" data-account-card="${account.id}">
       <div class="card-top"><div class="account-avatar">${microsoft?'M':mbox?'B':esc(account.display_name.charAt(0).toUpperCase())}</div><div class="account-title"><h2>${esc(account.display_name)}</h2><p>${esc(account.email)}${providerLabel}</p></div>
-      <details class="menu" data-account-menu="${account.id}" ${state.openAccountMenuId===account.id?'open':''}><summary aria-label="Azioni account ${esc(account.display_name)}" aria-haspopup="menu" aria-expanded="${state.openAccountMenuId===account.id?'true':'false'}">${icon('dots')}</summary><div role="menu">${microsoft||mbox?'':`<button role="menuitem" data-action="edit" data-id="${account.id}">Modifica IMAP</button>`}<button role="menuitem" data-action="retention" data-id="${account.id}">Versioni da tenere</button>${account.imap_enabled?`<button role="menuitem" data-action="test-saved" data-id="${account.id}">Test connessione</button>`:''}${microsoft?`<button role="menuitem" data-action="disconnect-microsoft" data-id="${account.id}" class="danger-text">Scollega Microsoft</button>`:''}${!account.is_permanent?`<button role="menuitem" data-action="permanent" data-id="${account.id}">Make permanent</button>`:'<span class="permanent-label">Permanent</span>'}${account.has_archive?`<button role="menuitem" data-action="export" data-id="${account.id}">Esporta archivio</button><button role="menuitem" data-action="clear" data-id="${account.id}" class="danger-text">Cancella archivio</button>`:''}<button role="menuitem" data-action="delete" data-id="${account.id}" class="danger-text">Elimina account</button></div></details></div>
+      <details class="menu" data-account-menu="${account.id}" ${state.openAccountMenuId===account.id?'open':''}><summary aria-label="Azioni account ${esc(account.display_name)}" aria-haspopup="menu" aria-expanded="${state.openAccountMenuId===account.id?'true':'false'}">${icon('dots')}</summary><div role="menu">${microsoft||mbox?'':`<button role="menuitem" data-action="edit" data-id="${account.id}">Modifica IMAP</button>`}<button role="menuitem" data-action="retention" data-id="${account.id}">Versioni da tenere</button>${account.imap_enabled?`<button role="menuitem" data-action="test-saved" data-id="${account.id}">Test connessione</button>`:''}${microsoft?`<button role="menuitem" data-action="disconnect-microsoft" data-id="${account.id}" class="danger-text">Scollega Microsoft</button>`:''}${!account.is_permanent?`<button role="menuitem" data-action="permanent" data-id="${account.id}">Make permanent</button>`:'<span class="permanent-label">Permanent</span>'}${account.has_archive?`<button role="menuitem" data-action="export" data-id="${account.id}">Esporta archivio</button><button role="menuitem" data-action="export-local" data-id="${account.id}">Esporta su NAS</button><button role="menuitem" data-action="clear" data-id="${account.id}" class="danger-text">Cancella archivio</button>`:''}<button role="menuitem" data-action="delete" data-id="${account.id}" class="danger-text">Elimina account</button></div></details></div>
       <div class="card-stats"><div><strong>${account.message_count.toLocaleString('it-IT')}</strong><span>messaggi</span></div><div><strong>${bytes(account.archive_size)}</strong><span>archivio</span></div></div>
       <div class="last-backup"><span class="status-dot ${esc(account.last_backup_status)}"></span><div><strong>${esc(statusLabel(account.last_backup_status))}</strong><small>${date(account.last_backup_at)}${account.next_backup_at ? ` · Prossimo ${date(account.next_backup_at)}` : ''}</small></div></div>
       ${account.last_backup_error ? `<p class="card-error" title="${esc(account.last_backup_error)}">${esc(account.last_backup_error)}</p>` : ''}${progress}
@@ -258,6 +261,32 @@ async function exportArchive(accountId) {
     $('#export-close').disabled = false; $('#export-done').disabled = false;
   }
 }
+async function exportArchiveToNas(accountId) {
+  const dialog = $('#export-dialog');
+  $('#export-close').disabled = true; $('#export-done').disabled = true;
+  $$('[data-export-step]').forEach(node => node.classList.remove('active', 'done'));
+  $('#export-summary').textContent = 'Salvo il pacchetto .mailvault nella cartella export locale della NAS.';
+  exportStep('prepare'); exportProgress('Avvio export su NAS…', 5, 'Il file verrà copiato nella cartella preimpostata sul volume dati.');
+  dialog.showModal();
+  try {
+    const job = await api(`/api/accounts/${accountId}/export/local`, {method:'POST'});
+    let current = job;
+    while (current.status === 'queued' || current.status === 'running') {
+      exportProgress(current.status === 'queued' ? 'Export su NAS in coda…' : 'Export su NAS…', current.percent || 5, current.detail || 'Preparazione file.');
+      await wait(1500);
+      current = await api(current.status_url);
+    }
+    if (current.status === 'failed') throw new Error(current.error || current.detail || 'Export non riuscito');
+    exportStep('prepare', 'done'); exportStep('browser', 'done'); exportStep('save', 'done');
+    exportProgress('Export su NAS completato', 100, current.local_path ? `File salvato: ${current.local_path}` : 'File salvato nella cartella export locale.');
+    toast('Export salvato su NAS');
+  } catch (error) {
+    exportProgress('Export non completato', 0, error.message);
+    toast(error.message, 'error');
+  } finally {
+    $('#export-close').disabled = false; $('#export-done').disabled = false;
+  }
+}
 
 document.addEventListener('click', async event => {
   if (!event.target.closest('.menu') && state.openAccountMenuId !== null) closeAccountMenus();
@@ -283,6 +312,7 @@ document.addEventListener('click', async event => {
     if (button.dataset.action === 'open') await openArchive(account);
     if (button.dataset.action === 'transfer') await openTransfer(id);
     if (button.dataset.action === 'export') await exportArchive(id);
+    if (button.dataset.action === 'export-local') await exportArchiveToNas(id);
     if (button.dataset.action === 'permanent' && await confirmAction('Make permanent?', 'Standard plans can change the permanent mailbox only after the 31-day lock.')) { await api(`/api/accounts/${id}/permanent`,{method:'POST'});toast('Permanent mailbox updated');loadAccounts(); }
     if (button.dataset.action === 'clear' && await confirmAction('Cancellare l’archivio locale?', 'La configurazione IMAP resterà salvata, ma EML e allegati locali saranno rimossi.')) { await api(`/api/accounts/${id}/archive`,{method:'DELETE'}); toast('Archivio cancellato'); loadAccounts(); }
     if (button.dataset.action === 'delete' && await confirmAction('Eliminare account e archivio?', 'Questa operazione elimina configurazione, EML e allegati locali. Non modifica il server email.')) { await api(`/api/accounts/${id}`,{method:'DELETE'}); toast('Account eliminato'); loadAccounts(); }
@@ -517,8 +547,104 @@ $('#backup-activity-button').addEventListener('click',()=>{$('#activity-dialog')
 const collapsed=localStorage.getItem('emboxa-sidebar-collapsed')==='true';document.body.classList.toggle('sidebar-collapsed',collapsed);
 $('#sidebar-collapse').addEventListener('click',()=>{document.body.classList.toggle('sidebar-collapsed');localStorage.setItem('emboxa-sidebar-collapsed',document.body.classList.contains('sidebar-collapsed'));});
 
-$('#import-button').addEventListener('click',()=>$('#import-input').click());
-$('#import-input').addEventListener('change',async event=>{const file=event.target.files[0];if(!file)return;const data=new FormData();data.append('file',file);toast('Verifica e importazione in corso…');try{await api('/api/import',{method:'POST',body:data});toast('Archivio importato');loadAccounts();}catch(error){toast(error.message,'error');}finally{event.target.value='';}});
+function importProgress(status, percent = 0, detail = '') {
+  $('#import-status').textContent = status;
+  $('#import-percent').textContent = `${Math.max(0, Math.min(100, Math.round(percent)))}%`;
+  $('#import-progress-bar').style.width = `${Math.max(0, Math.min(100, Math.round(percent)))}%`;
+  $('#import-detail').textContent = detail;
+}
+function uploadArchiveFormData(data, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const started = performance.now();
+    xhr.open('POST', '/api/import');
+    xhr.setRequestHeader('X-CSRF-Token', csrf);
+    xhr.upload.onprogress = event => {
+      if (!event.lengthComputable) return onProgress?.(8, 'Upload archivio in corso…');
+      const percent = Math.max(1, Math.min(70, Math.round((event.loaded / event.total) * 70)));
+      const seconds = Math.max(.1, (performance.now() - started) / 1000);
+      onProgress?.(percent, `Upload archivio · ${bytes(event.loaded)} / ${bytes(event.total)} · ${bytes(event.loaded / seconds)}/s`);
+    };
+    xhr.upload.onload = () => onProgress?.(72, 'Upload completato. Verifica e importazione del pacchetto .mailvault…');
+    xhr.onload = () => {
+      let payload = null;
+      try { payload = xhr.responseText ? JSON.parse(xhr.responseText) : null; } catch {}
+      if (xhr.status === 401) { location.href = '/login'; return reject(new Error('Sessione scaduta')); }
+      if (xhr.status < 200 || xhr.status >= 300) return reject(new Error(payload?.detail || `Errore ${xhr.status}`));
+      resolve(payload);
+    };
+    xhr.onerror = () => reject(new Error('Upload archivio non riuscito'));
+    xhr.send(data);
+  });
+}
+async function waitForArchiveImportJob(job) {
+  let current = job;
+  while (current.status === 'queued' || current.status === 'running') {
+    importProgress(current.status === 'queued' ? 'Import in coda…' : 'Import in corso…', current.percent || 1, current.detail || 'Import archivio in background.');
+    await wait(1500);
+    current = await api(current.status_url);
+  }
+  if (current.status === 'failed') throw new Error(current.error || current.detail || 'Import non riuscito');
+  return current;
+}
+function closeImportChoice(){ $('#import-choice')?.classList.add('hidden'); }
+$('#import-button').addEventListener('click',event=>{event.stopPropagation();$('#import-choice')?.classList.toggle('hidden');});
+$('#import-choice')?.addEventListener('click',async event=>{
+  const button=event.target.closest('[data-import-choice]'); if(!button)return;
+  closeImportChoice();
+  if(button.dataset.importChoice==='upload')return $('#import-input').click();
+  if(button.dataset.importChoice==='link')return importArchiveFromLink();
+  if(button.dataset.importChoice==='local')return importArchiveFromNas();
+});
+document.addEventListener('click',event=>{if(!event.target.closest('#import-choice,#import-button'))closeImportChoice();});
+$('#import-input').addEventListener('change',async event=>{
+  const file=event.target.files[0];if(!file)return;
+  const data=new FormData();data.append('file',file);
+  const dialog=$('#import-dialog');$('#import-close').disabled=true;$('#import-done').disabled=true;
+  $('#import-summary').textContent=`File locale · ${esc(file.name)} · ${bytes(file.size)}`;
+  importProgress('Upload archivio…',1,'Carico il file .mailvault sul server.');
+  dialog.showModal();
+  try{
+    const job=await uploadArchiveFormData(data,(percent,detail)=>importProgress('Upload archivio…',percent,detail));
+    await waitForArchiveImportJob(job);
+    importProgress('Import completato',100,'Archivio importato. Ora compare nella dashboard.');
+    toast('Archivio importato');
+    loadAccounts();
+  }catch(error){importProgress('Import non completato',0,error.message);toast(error.message,'error');}
+  finally{$('#import-close').disabled=false;$('#import-done').disabled=false;event.target.value='';}
+});
+async function importArchiveFromLink(){
+  const url=(prompt('Incolla il link diretto al file .mailvault da importare')||'').trim();
+  if(!url)return;
+  const dialog=$('#import-dialog');$('#import-close').disabled=true;$('#import-done').disabled=true;
+  $('#import-summary').textContent='Import da link · il server scarica il .mailvault senza upload dal browser.';
+  importProgress('Download archivio…',1,'Scarico il file direttamente dal server.');
+  dialog.showModal();
+  try{
+    const job=await api('/api/import/link',{method:'POST',body:JSON.stringify({url})});
+    await waitForArchiveImportJob(job);
+    importProgress('Import completato',100,'Archivio importato. Ora compare nella dashboard.');
+    toast('Archivio importato');
+    loadAccounts();
+  }catch(error){importProgress('Import non completato',0,error.message);toast(error.message,'error');}
+  finally{$('#import-close').disabled=false;$('#import-done').disabled=false;}
+}
+async function importArchiveFromNas(){
+  const mode=(prompt('Cosa importare dalla cartella NAS? Scrivi: auto, mailvault oppure mbox','auto')||'auto').trim().toLowerCase();
+  if(!['auto','mailvault','mbox'].includes(mode))return toast('Scelta non valida: usa auto, mailvault oppure mbox','error');
+  const dialog=$('#import-dialog');$('#import-close').disabled=true;$('#import-done').disabled=true;
+  $('#import-summary').textContent='Import da cartella NAS · legge i file già presenti in /data/local-imports.';
+  importProgress('Import da cartella NAS…',1,'Scansione della cartella locale.');
+  dialog.showModal();
+  try{
+    const job=await api('/api/import/local',{method:'POST',body:JSON.stringify({mode,display_name:'Import NAS',email:'nas-import@local.invalid'})});
+    const result=await waitForArchiveImportJob(job);
+    importProgress('Import completato',100,`Creati ${result.account_ids?.length||1} archivio/i dalla cartella NAS.`);
+    toast('Import da NAS completato');
+    loadAccounts();
+  }catch(error){importProgress('Import non completato',0,error.message);toast(error.message,'error');}
+  finally{$('#import-close').disabled=false;$('#import-done').disabled=false;}
+}
 function mboxImportProgress(status, percent = 0, detail = '') {
   $('#mbox-import-status').textContent = status;
   $('#mbox-import-percent').textContent = `${Math.max(0, Math.min(100, Math.round(percent)))}%`;
@@ -576,7 +702,7 @@ $('#mbox-import-input').addEventListener('change',async event=>{
   }catch(error){mboxImportProgress('Import MBOX non completato',0,error.message);toast(error.message,'error');}
   finally{$('#mbox-import-close').disabled=false;$('#mbox-import-done').disabled=false;event.target.value='';}
 });
-$('#mbox-import-link-button').addEventListener('click',async()=>{
+$('#mbox-import-link-button')?.addEventListener('click',async()=>{
   const url=(prompt('Incolla il link diretto al file MBOX da scaricare sul server')||'').trim();
   if(!url)return;
   const defaultName=new URL(url, location.href).pathname.split('/').pop()?.replace(/\.mbox$/i,'')||'Archivio MBOX importato';

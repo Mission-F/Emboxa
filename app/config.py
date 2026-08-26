@@ -53,11 +53,13 @@ ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 ARCHIVES_DIR = DATA_DIR / "archives"
 EXPORTS_DIR = DATA_DIR / "exports"
 IMPORTS_DIR = DATA_DIR / "imports"
+LOCAL_IMPORTS_DIR = Path(os.getenv("LOCAL_IMPORTS_DIR", DATA_DIR / "local-imports")).resolve()
+LOCAL_EXPORTS_DIR = Path(os.getenv("LOCAL_EXPORTS_DIR", DATA_DIR / "local-exports")).resolve()
 SECRETS_DIR = DATA_DIR / "secrets"
 
 
 def ensure_data_dirs() -> None:
-    for path in (DATA_DIR / "db", ARCHIVES_DIR, EXPORTS_DIR, IMPORTS_DIR, SECRETS_DIR):
+    for path in (DATA_DIR / "db", ARCHIVES_DIR, EXPORTS_DIR, IMPORTS_DIR, LOCAL_IMPORTS_DIR, LOCAL_EXPORTS_DIR, SECRETS_DIR):
         path.mkdir(parents=True, exist_ok=True)
     try:
         SECRETS_DIR.chmod(0o700)
