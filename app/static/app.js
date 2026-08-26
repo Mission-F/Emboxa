@@ -208,15 +208,29 @@ async function responseToBlobWithProgress(response, fallbackSize = 0) {
   }
   return new Blob(chunks, {type: response.headers.get('content-type') || 'application/vnd.mailvault+zip'});
 }
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function waitForExportJob(job) {
+  let current = job, visualPercent = Number(job.percent || 5);
+  while (current.status === 'queued' || current.status === 'running') {
+    visualPercent = Math.min(92, Math.max(visualPercent + 3, Number(current.percent || 0)));
+    exportProgress(current.status === 'queued' ? 'Export in coda…' : 'Export in background…', visualPercent, current.detail || 'Il server sta preparando il file senza tenere aperta la richiesta Cloudflare.');
+    await wait(1500);
+    current = await api(current.status_url);
+  }
+  if (current.status === 'failed') throw new Error(current.error || current.detail || 'Export non riuscito');
+  if (!current.export?.download_url) throw new Error('Export completato ma download non disponibile');
+  return current.export;
+}
 async function exportArchive(accountId) {
   const dialog = $('#export-dialog');
   $('#export-close').disabled = true; $('#export-done').disabled = true;
   $$('[data-export-step]').forEach(node => node.classList.remove('active', 'done'));
-  $('#export-summary').textContent = 'Creo un pacchetto .mailvault locale sul server.';
-  exportStep('prepare'); exportProgress('Preparazione export locale…', 8, 'L’archivio viene impacchettato nella cartella exports di EMBOXA.');
+  $('#export-summary').textContent = 'Creo un pacchetto .mailvault in background.';
+  exportStep('prepare'); exportProgress('Avvio export asincrono…', 5, 'La richiesta torna subito: niente più timeout 524 durante la creazione.');
   dialog.showModal();
   try {
-    const info = await api(`/api/accounts/${accountId}/export`, {method:'POST'});
+    const job = await api(`/api/accounts/${accountId}/export`, {method:'POST'});
+    const info = await waitForExportJob(job);
     exportStep('prepare', 'done');
     $('#export-summary').textContent = `${info.filename} · ${bytes(info.size)}`;
     exportProgress('Export locale pronto', 28, info.persistent ? 'Conservazione server: senza scadenza.' : `Conservazione server fino a ${date(info.expires_at)}.`);

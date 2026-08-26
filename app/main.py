@@ -11,6 +11,8 @@ import secrets
 import shutil
 import tempfile
 import smtplib
+import threading
+import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from email.message import EmailMessage
@@ -1966,7 +1968,7 @@ def _create_export(account_id: int, user: User, db: Session) -> WebExport:
         path.unlink(missing_ok=True)
         shutil.rmtree(path.parent, ignore_errors=True)
         raise HTTPException(413, "Export exceeds the configured maximum size")
-    public_id = str(__import__("uuid").uuid4())
+    public_id = str(uuid.uuid4())
     destination_dir = EXPORTS_DIR / f"user-{user.id}"; destination_dir.mkdir(parents=True, exist_ok=True)
     destination = destination_dir / f"{public_id}.mailvault"
     shutil.move(str(path), destination); shutil.rmtree(path.parent, ignore_errors=True)
@@ -1978,9 +1980,12 @@ def _create_export(account_id: int, user: User, db: Session) -> WebExport:
     return item
 
 
-@app.post("/api/accounts/{account_id}/export", dependencies=[Depends(csrf_guard)])
-def create_export(account_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    item = _create_export(account_id, user, db)
+EXPORT_JOB_LOCK = threading.Lock()
+EXPORT_JOBS: dict[str, dict] = {}
+EXPORT_JOB_RETENTION = timedelta(hours=6)
+
+
+def _export_payload(item: WebExport) -> dict:
     return {
         "id": item.public_id,
         "filename": item.filename,
@@ -1991,10 +1996,113 @@ def create_export(account_id: int, user: User = Depends(current_user), db: Sessi
     }
 
 
+def _cleanup_export_jobs() -> None:
+    cutoff = utcnow() - EXPORT_JOB_RETENTION
+    with EXPORT_JOB_LOCK:
+        for job_id, job in list(EXPORT_JOBS.items()):
+            finished_at = job.get("finished_at")
+            if finished_at and finished_at < cutoff:
+                EXPORT_JOBS.pop(job_id, None)
+
+
+def _export_job_response(job: dict) -> dict:
+    response = {
+        "job_id": job["id"],
+        "account_id": job["account_id"],
+        "status": job["status"],
+        "percent": job["percent"],
+        "detail": job["detail"],
+        "status_url": f"/api/exports/jobs/{job['id']}",
+        "created_at": job["created_at"],
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+    }
+    if job.get("error"):
+        response["error"] = job["error"]
+    if job.get("export"):
+        response["export"] = job["export"]
+    return response
+
+
+def _set_export_job(job_id: str, **changes) -> None:
+    with EXPORT_JOB_LOCK:
+        job = EXPORT_JOBS.get(job_id)
+        if job:
+            job.update(changes)
+
+
+def _run_export_job(job_id: str, user_id: int, account_id: int) -> None:
+    _set_export_job(job_id, status="running", percent=12, detail="Export avviato in background.", started_at=utcnow())
+    try:
+        with SessionLocal() as db:
+            user = db.get(User, user_id)
+            if not user or user.status != "active" or not user.verified_at:
+                raise HTTPException(403, "Account is not available")
+            _set_export_job(job_id, percent=18, detail="Creazione del pacchetto .mailvault sul server.")
+            item = _create_export(account_id, user, db)
+            _set_export_job(
+                job_id,
+                status="completed",
+                percent=100,
+                detail="Export pronto per il download.",
+                export=_export_payload(item),
+                finished_at=utcnow(),
+            )
+    except Exception as exc:
+        detail = getattr(exc, "detail", None) or str(exc) or "Export failed"
+        log.warning("Export job %s failed: %s", job_id, detail)
+        _set_export_job(job_id, status="failed", percent=100, detail=detail, error=detail, finished_at=utcnow())
+
+
+def _start_export_job(account_id: int, user: User, db: Session) -> dict:
+    _cleanup_export_jobs()
+    account = _account_or_404(db, account_id)
+    if account.owner_id != user.id:
+        raise HTTPException(404, "Account non trovato")
+    if user.plan != "PLUS" and _storage_used(db, user.id) + _active_export_size(db, user.id) + account.archive_size > user.storage_limit_bytes:
+        raise HTTPException(409, f"Storage limit reached. Contact the administrator at {_contact_email()}")
+    with EXPORT_JOB_LOCK:
+        for job in EXPORT_JOBS.values():
+            if job["user_id"] == user.id and job["account_id"] == account_id and job["status"] in {"queued", "running"}:
+                return job
+        job_id = str(uuid.uuid4())
+        job = {
+            "id": job_id,
+            "user_id": user.id,
+            "account_id": account_id,
+            "status": "queued",
+            "percent": 5,
+            "detail": "Export aggiunto alla coda locale.",
+            "created_at": utcnow(),
+            "started_at": None,
+            "finished_at": None,
+            "error": "",
+            "export": None,
+        }
+        EXPORT_JOBS[job_id] = job
+    thread = threading.Thread(target=_run_export_job, args=(job_id, user.id, account_id), name=f"emboxa-export-{job_id[:8]}", daemon=True)
+    thread.start()
+    return job
+
+
+@app.post("/api/accounts/{account_id}/export", dependencies=[Depends(csrf_guard)])
+def create_export(account_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return _export_job_response(_start_export_job(account_id, user, db))
+
+
 @app.get("/api/accounts/{account_id}/export", dependencies=[Depends(current_user)])
-def export_account(account_id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    item = _create_export(account_id, user, db)
-    return RedirectResponse(f"/api/exports/{item.public_id}/download", status_code=303)
+def export_account(account_id: int, response: Response, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    response.status_code = 202
+    return _export_job_response(_start_export_job(account_id, user, db))
+
+
+@app.get("/api/exports/jobs/{job_id}", dependencies=[Depends(current_user)])
+def export_job_status(job_id: str, user: User = Depends(current_user)):
+    with EXPORT_JOB_LOCK:
+        job = EXPORT_JOBS.get(job_id)
+        if not job or job["user_id"] != user.id:
+            raise HTTPException(404, "Export job not found")
+        return _export_job_response(dict(job))
 
 
 @app.get("/api/exports/{public_id}/download")

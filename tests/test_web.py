@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import json
+import time
 import tempfile
 from datetime import timedelta
 from pathlib import Path
@@ -42,6 +43,19 @@ def fake_export_file(name: str, content: bytes) -> tuple:
     path = temp_dir / name
     path.write_bytes(content)
     return path, name
+
+
+def wait_export(client: TestClient, job: dict) -> dict:
+    for _ in range(80):
+        status = client.get(job["status_url"])
+        assert status.status_code == 200, status.text
+        payload = status.json()
+        if payload["status"] == "completed":
+            return payload["export"]
+        if payload["status"] == "failed":
+            raise AssertionError(payload.get("error") or payload.get("detail"))
+        time.sleep(0.05)
+    raise AssertionError("export job did not complete")
 
 
 def test_passkey_registration_login_and_delete(monkeypatch):
@@ -253,7 +267,7 @@ def test_standard_export_can_be_kept_forever_when_admin_sets_zero_ttl(monkeypatc
         headers = login(client, "standard-export@example.com", "standard-export-password")
         response = client.post(f"/api/accounts/{account_id}/export", headers=headers)
         assert response.status_code == 200, response.text
-        payload = response.json()
+        payload = wait_export(client, response.json())
         assert payload["persistent"] is True and payload["expires_at"] is None
         download = client.get(payload["download_url"])
         assert download.status_code == 200 and download.content == b"standard-export"
@@ -290,7 +304,7 @@ def test_plus_exports_ignore_size_storage_and_duration_limits(monkeypatch):
         headers = login(client, "plus-export@example.com", "plus-export-password")
         response = client.post(f"/api/accounts/{account_id}/export", headers=headers)
         assert response.status_code == 200, response.text
-        payload = response.json()
+        payload = wait_export(client, response.json())
         assert payload["persistent"] is True and payload["expires_at"] is None and payload["size"] > 1
         assert client.get(payload["download_url"]).content == b"plus-export"
 
