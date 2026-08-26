@@ -401,18 +401,33 @@ function extensionLabel(item) {
   return String(item.extension || item.filename?.split('.').pop() || item.category || 'file').replace(/[^a-z0-9]/gi,'').slice(0,5).toUpperCase() || 'FILE';
 }
 function extensionColor(label) {
-  const palette = ['#fca311','#ff6b35','#2f80ed','#20a36a','#8b5cf6','#ec4899','#06b6d4','#64748b','#ef4444','#84cc16'];
+  const key = String(label || '').toUpperCase();
+  const colors = {
+    PDF: '#df493b',
+    JPG: '#668aa8', JPEG: '#668aa8', PNG: '#668aa8', GIF: '#668aa8', WEBP: '#668aa8', SVG: '#668aa8',
+    XLS: '#2c8757', XLSX: '#2c8757', CSV: '#2c8757', NUMB: '#2c8757',
+    DOC: '#14213d', DOCX: '#14213d', RTF: '#14213d',
+    PPT: '#f97316', PPTX: '#f97316', KEY: '#f97316',
+    ZIP: '#7c3aed', RAR: '#7c3aed', '7Z': '#7c3aed', TAR: '#7c3aed', GZ: '#7c3aed',
+    EML: '#fca311', MSG: '#fca311', TXT: '#64748b', MD: '#64748b'
+  };
+  if (colors[key]) return colors[key];
   let hash = 0;
+  const palette = ['#fca311','#ff6b35','#2f80ed','#20a36a','#8b5cf6','#ec4899','#06b6d4','#64748b','#ef4444','#84cc16'];
   for (const char of label) hash = (hash * 31 + char.charCodeAt(0)) % palette.length;
   return palette[hash];
 }
 function attachmentPreview(item){
+  const label = extensionLabel(item);
+  return `<div class="file-tile extension-tile"><b>${esc(label)}</b></div>`;
+}
+function attachmentCard(item) {
   const label = extensionLabel(item), color = extensionColor(label);
-  return `<div class="file-tile extension-tile" style="--file-color:${color}"><b>${esc(label)}</b><small>${esc(item.category||'file')}</small></div>`;
+  return `<article class="attachment-card" role="button" tabindex="0" style="--file-color:${color}" data-view-attachment='${attachmentData(item)}'>${attachmentPreview(item)}<div class="attachment-info"><h3 title="${esc(item.filename)}">${esc(item.filename)}</h3><p>${label} · ${bytes(item.size)}</p></div></article>`;
 }
 async function loadAttachments(){
   const container=$('#attachments-results'),a=state.attachments;container.innerHTML=skeleton(8);
-  try{const params=new URLSearchParams({snapshot_id:state.snapshotId,page:a.page,page_size:a.pageSize,category:a.category});if(a.q)params.set('q',a.q);if(state.folderId)params.set('folder_id',state.folderId);const data=await api(`/api/accounts/${state.account.id}/attachments?${params}`);a.total=data.total;$('#attachments-count').textContent=`${data.total.toLocaleString('it-IT')} file`;container.className=`attachments-results ${a.mode}`;container.innerHTML=data.items.length?data.items.map(item=>`<article class="attachment-card">${attachmentPreview(item)}<div class="attachment-info"><h3 title="${esc(item.filename)}">${esc(item.filename)}</h3><p>${esc((item.extension||item.category).toUpperCase())} · ${bytes(item.size)}</p><dl><div><dt>From</dt><dd>${esc(item.sender||'—')}</dd></div><div><dt>Subject</dt><dd>${esc(item.subject)}</dd></div><div><dt>Folder</dt><dd>${esc(item.folder)}</dd></div><div><dt>Date</dt><dd>${date(item.date)}</dd></div></dl></div><div class="attachment-card-actions"><button class="secondary" type="button" data-view-attachment='${attachmentData(item)}'>Open</button><a class="ghost" href="${item.download_url}" download>Download</a><button class="ghost" type="button" data-show-email="${item.message_id}">Show email</button></div></article>`).join(''):`<div class="empty-list">${icon('file')}<p>Nessun allegato corrisponde ai filtri.</p></div>`;const pages=Math.max(1,Math.ceil(data.total/a.pageSize));$('#attachments-page').textContent=`${a.page} di ${pages}`;$('#attachments-prev').disabled=a.page<=1;$('#attachments-next').disabled=a.page>=pages;}catch(error){container.innerHTML=`<div class="empty-list error">${esc(error.message)}</div>`;}
+  try{const params=new URLSearchParams({snapshot_id:state.snapshotId,page:a.page,page_size:a.pageSize,category:a.category});if(a.q)params.set('q',a.q);if(state.folderId)params.set('folder_id',state.folderId);const data=await api(`/api/accounts/${state.account.id}/attachments?${params}`);a.total=data.total;$('#attachments-count').textContent=`${data.total.toLocaleString('it-IT')} file`;container.className=`attachments-results ${a.mode}`;container.innerHTML=data.items.length?data.items.map(attachmentCard).join(''):`<div class="empty-list">${icon('file')}<p>Nessun allegato corrisponde ai filtri.</p></div>`;const pages=Math.max(1,Math.ceil(data.total/a.pageSize));$('#attachments-page').textContent=`${a.page} di ${pages}`;$('#attachments-prev').disabled=a.page<=1;$('#attachments-next').disabled=a.page>=pages;}catch(error){container.innerHTML=`<div class="empty-list error">${esc(error.message)}</div>`;}
 }
 async function openAttachmentViewer(item){
   const dialog=$('#attachment-viewer'),mime=(item.content_type||'').toLowerCase(),extension=(item.extension||item.filename?.split('.').pop()||'').toLowerCase(),url=item.open_url||`/api/attachments/${item.id}?inline=1`;
@@ -426,7 +441,8 @@ async function openAttachmentViewer(item){
   else content.innerHTML=`<div class="viewer-unsupported">${icon('file')}<h3>${esc(item.filename)}</h3><p>${esc(mime||'Formato non supportato')}</p><small>Anteprima locale non disponibile. Usa Download per aprire il file con un’app compatibile.</small></div>`;
 }
 async function showEmailFromAttachment(messageId){$('#attachment-viewer').close();showArchiveView('messages');state.trash=false;state.folderId=null;state.page=1;renderFolders();await loadMessages();await readThread(Number(messageId));}
-$('#attachments-results').addEventListener('click',event=>{const open=event.target.closest('[data-view-attachment]');if(open)return openAttachmentViewer(JSON.parse(open.dataset.viewAttachment));const show=event.target.closest('[data-show-email]');if(show)return showEmailFromAttachment(show.dataset.showEmail);});
+$('#attachments-results').addEventListener('click',event=>{const show=event.target.closest('[data-show-email]');if(show)return showEmailFromAttachment(show.dataset.showEmail);if(event.target.closest('a'))return;const open=event.target.closest('[data-view-attachment]');if(open)return openAttachmentViewer(JSON.parse(open.dataset.viewAttachment));});
+$('#attachments-results').addEventListener('keydown',event=>{if(!['Enter',' '].includes(event.key))return;const open=event.target.closest('[data-view-attachment]');if(!open)return;event.preventDefault();openAttachmentViewer(JSON.parse(open.dataset.viewAttachment));});
 $('#viewer-show-email').addEventListener('click',event=>showEmailFromAttachment(event.currentTarget.dataset.messageId));
 let attachmentSearchTimer;$('#attachment-search').addEventListener('input',event=>{clearTimeout(attachmentSearchTimer);attachmentSearchTimer=setTimeout(()=>{state.attachments.q=event.target.value.trim();state.attachments.page=1;loadAttachments();},300);});
 $('#attachment-filter').addEventListener('change',event=>{state.attachments.category=event.target.value;state.attachments.page=1;loadAttachments();});
