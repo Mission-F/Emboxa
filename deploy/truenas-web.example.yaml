@@ -12,7 +12,8 @@ services:
       DATABASE_URL: sqlite:////data/db/emboxa-web.db
       SESSION_SECRET_FILE: /data/secrets/session.key
       ENCRYPTION_KEY_FILE: /data/secrets/fernet.key
-      PUBLIC_APP_URL: https://example.com
+      PUBLIC_APP_URL: https://app.emboxa.eu
+      PUBLIC_SITE_URL: https://emboxa.eu
       COOKIE_SECURE: "true"
       FORWARDED_ALLOW_IPS: "*"
       ADMIN_EMAIL: ""

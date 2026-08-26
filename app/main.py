@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import json
 import hashlib
-from html import escape
 import logging
 import mimetypes
 import os
@@ -54,8 +53,8 @@ from .archive import ArchiveError, build_export, clear_account_archive, delete_a
 from .backup import backup_manager, next_backup_time, recover_interrupted_jobs, rotate_versions, snapshot_root
 from .config import (
     ADMIN_EMAIL, ADMIN_PASSWORD, ARCHIVES_DIR, COOKIE_SECURE, DATA_DIR, EXPORTS_DIR, EXPORT_TTL_HOURS, IMPORTS_DIR, IMPORT_MAX_BYTES,
-    GITHUB_REPOSITORY_URL, GOOGLE_ANALYTICS_ID, LEGAL_ADDRESS, LEGAL_CONTACT_EMAIL, LEGAL_ENTITY_NAME, LEGAL_VAT_ID,
-    LOG_LEVEL, PERMANENT_MAILBOX_LOCK_DAYS, PUBLIC_APP_URL, SMTP_FROM_EMAIL, SMTP_FROM_NAME,
+    GOOGLE_ANALYTICS_ID, LEGAL_CONTACT_EMAIL,
+    LOG_LEVEL, PERMANENT_MAILBOX_LOCK_DAYS, PUBLIC_APP_URL, PUBLIC_SITE_URL, SMTP_FROM_EMAIL, SMTP_FROM_NAME,
     SMTP_HOST, SMTP_PASSWORD, SMTP_PORT, SMTP_SECURITY, SMTP_USERNAME, STANDARD_MAILBOX_LIMIT,
     STANDARD_RETENTION_DAYS, STANDARD_STORAGE_LIMIT_BYTES, TELEGRAM_BOT_TOKEN, MICROSOFT_CLIENT_ID,
     TELEGRAM_BOT_USERNAME, ensure_data_dirs,
@@ -532,14 +531,11 @@ def _issue_verification(db: Session, user: User) -> None:
 
 @app.get("/", response_class=HTMLResponse)
 def public_home(request: Request):
-    available = [item.strip() for item in get_setting("available_languages", "it,en,fr,de,es,pt").split(",") if item.strip() in {"it", "en"}]
-    if not available:
-        available = ["it", "en"]
-    preferred = next((part.split(";")[0].strip().lower().split("-")[0]
-                      for part in request.headers.get("accept-language", "").split(",")
-                      if part.split(";")[0].strip().lower().split("-")[0] in available), None)
-    locale = preferred or get_setting("default_language", "en")
-    return RedirectResponse(f"/{locale if locale in available else ('en' if 'en' in available else available[0])}/", status_code=307)
+    return RedirectResponse("/app" if request.session.get("user_id") else "/login", status_code=303)
+
+
+def _marketing_url(path: str = "") -> str:
+    return f"{get_setting('public_site_url', PUBLIC_SITE_URL).rstrip('/')}{path}"
 
 
 PUBLIC_PAGES = {"features", "self-hosted", "imap-email-backup", "email-archive", "restore-email-to-mailbox", "truenas-email-backup",
@@ -577,61 +573,26 @@ def localized_public(request: Request, page: str = "home"):
     locale = request.url.path.split("/")[1]
     if page != "home" and page not in PUBLIC_PAGES:
         raise HTTPException(404, "Page not found")
-    public_url = get_setting("public_domain", PUBLIC_APP_URL).rstrip("/")
-    analytics_id = get_setting("google_analytics_id", GOOGLE_ANALYTICS_ID) if get_bool_setting("analytics_enabled") else ""
-    canonical = f"{public_url}/{locale}/" + ("" if page == "home" else page)
-    fallback_title = get_setting("seo_default_title", "Emboxa Web — email backup and IMAP Transfer")
-    fallback_description = get_setting("seo_default_description") or "Versioned IMAP email backup, searchable email archive and IMAP Transfer restore."
-    seo_title, seo_description, seo_keywords = SEO_PAGES.get(page, {}).get(locale, (
-        f"{page.replace('-', ' ').title()} — Emboxa Web", fallback_description, "IMAP backup, email archive"
-    ))
-    if page == "home" and locale == "en":
-        seo_title = fallback_title or seo_title
-        seo_description = fallback_description or seo_description
-    return templates.TemplateResponse(request, "public.html", {
-        "locale": locale, "page": page, "canonical": canonical, "public_url": public_url,
-        "app_name": get_setting("public_app_name"), "analytics_id": analytics_id, "from_email": _contact_email(),
-        "github_url": GITHUB_REPOSITORY_URL,
-        "logged_in": bool(request.session.get("user_id")),
-        "retention_days": get_int_setting("standard_retention_days", STANDARD_RETENTION_DAYS),
-        "storage_limit_gb": round(get_int_setting("standard_storage_limit_bytes", STANDARD_STORAGE_LIMIT_BYTES) / 1024**3),
-        "mailbox_limit": get_int_setting("standard_mailbox_limit", STANDARD_MAILBOX_LIMIT),
-        "version_limit": get_int_setting("default_backup_retention_versions", 3),
-        "permanent_limit": get_int_setting("permanent_mailbox_limit", 1),
-        "legal_entity": LEGAL_ENTITY_NAME, "legal_address": LEGAL_ADDRESS, "legal_vat": LEGAL_VAT_ID,
-        "legal_email": LEGAL_CONTACT_EMAIL,
-        "seo_title": seo_title, "seo_description": seo_description, "seo_keywords": seo_keywords,
-    })
+    path = f"/{locale}/" + ("" if page == "home" else page)
+    return RedirectResponse(_marketing_url(path), status_code=308)
 
 
 @app.get("/robots.txt", response_class=PlainTextResponse)
 def robots():
-    public_url = get_setting("public_domain", PUBLIC_APP_URL).rstrip("/")
-    return f"User-agent: *\nAllow: /it/\nAllow: /en/\nDisallow: /app\nDisallow: /admin\nDisallow: /api\nSitemap: {public_url}/sitemap.xml\n"
+    return "User-agent: *\nDisallow: /\n"
 
 
 @app.get("/sitemap.xml")
 def sitemap():
-    public_url = get_setting("public_domain", PUBLIC_APP_URL).rstrip("/")
-    urls = []
-    for page in ["", *sorted(PUBLIC_PAGES)]:
-        for locale in ("it", "en"):
-            path = f"/{locale}/" + page
-            base = escape(public_url, quote=True)
-            urls.append(
-                f"<url><loc>{base}{path}</loc>"
-                f"<xhtml:link rel='alternate' hreflang='it' href='{base}/it/{page}'/>"
-                f"<xhtml:link rel='alternate' hreflang='en' href='{base}/en/{page}'/>"
-                f"<xhtml:link rel='alternate' hreflang='x-default' href='{base}/en/{page}'/>"
-                f"<changefreq>{'weekly' if not page else 'monthly'}</changefreq></url>"
-            )
-    xml = "<?xml version='1.0' encoding='UTF-8'?><urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9' xmlns:xhtml='http://www.w3.org/1999/xhtml'>" + "".join(urls) + "</urlset>"
-    return Response(xml, media_type="application/xml")
+    return RedirectResponse(_marketing_url("/sitemap.xml"), status_code=308)
 
 
 @app.get("/register", response_class=HTMLResponse)
 def register_page(request: Request):
-    return templates.TemplateResponse(request, "register.html", {"registration_enabled": get_bool_setting("registration_enabled")})
+    return templates.TemplateResponse(request, "register.html", {
+        "registration_enabled": get_bool_setting("registration_enabled"),
+        "marketing_url": _marketing_url(),
+    })
 
 
 @app.post("/api/register")
@@ -656,7 +617,7 @@ def register(payload: RegisterPayload, db: Session = Depends(get_db)):
 
 @app.get("/verify", response_class=HTMLResponse)
 def verify_page(request: Request):
-    return templates.TemplateResponse(request, "verify.html", {})
+    return templates.TemplateResponse(request, "verify.html", {"marketing_url": _marketing_url()})
 
 
 @app.post("/api/verify")
@@ -688,7 +649,7 @@ def resend_verification(payload: ResetRequestPayload, db: Session = Depends(get_
 def login_page(request: Request, db: Session = Depends(get_db)):
     if request.session.get("user_id"):
         return RedirectResponse("/app", status_code=303)
-    return templates.TemplateResponse(request, "login.html", {})
+    return templates.TemplateResponse(request, "login.html", {"marketing_url": _marketing_url()})
 
 
 @app.post("/api/login")
@@ -873,7 +834,7 @@ def verify_passkey_authentication(payload: PasskeyAuthenticationVerifyPayload, r
 
 @app.get("/reset-password", response_class=HTMLResponse)
 def reset_page(request: Request):
-    return templates.TemplateResponse(request, "reset.html", {})
+    return templates.TemplateResponse(request, "reset.html", {"marketing_url": _marketing_url()})
 
 
 @app.post("/api/password-reset/request")

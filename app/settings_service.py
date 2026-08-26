@@ -25,6 +25,7 @@ SETTING_DEFAULTS: dict[str, str] = {
     "telegram_webhook_url": f"{config.PUBLIC_APP_URL}/api/telegram/webhook",
     "public_app_name": "Emboxa Web",
     "public_domain": config.PUBLIC_APP_URL,
+    "public_site_url": config.PUBLIC_SITE_URL,
     "support_email": config.LEGAL_CONTACT_EMAIL,
     "default_language": "en",
     "available_languages": "it,en,fr,de,es,pt",

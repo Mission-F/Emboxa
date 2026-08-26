@@ -44,7 +44,7 @@ def test_admin_settings_authorization_persistence_secrets_and_auth_ui(monkeypatc
         if method == "getMe":
             return {"username": "emboxa_test_bot"}
         if method == "getWebhookInfo":
-            return {"url": "https://emboxa.eu/api/telegram/webhook"}
+            return {"url": "https://app.emboxa.eu/api/telegram/webhook"}
         return True
     monkeypatch.setattr(main, "_telegram_request", telegram_request)
     monkeypatch.setattr(main, "_telegram_call", lambda method, payload: {"username": "emboxa_test_bot"})

@@ -272,14 +272,19 @@ def test_web_multitenant_plans_retention_cleanup_telegram_and_public(monkeypatch
         raw_token = re.search(r"token=([A-Za-z0-9_%-]+)", sent[-1][2]).group(1)
         assert client.post("/api/password-reset/confirm", json={"token": raw_token, "password": "new-secure-password"}).status_code == 200
 
-        public = client.get("/it/")
-        assert public.status_code == 200 and "canonical" in public.text and "hreflang" in public.text
-        assert "noindex" not in public.headers.get("x-robots-tag", "")
-        assert "Disallow: /app" in client.get("/robots.txt").text
-        assert "<urlset" in client.get("/sitemap.xml").text
-        assert "x-default" in client.get("/sitemap.xml").text
-        assert client.get("/en/imap-email-backup").status_code == 200
+        root = client.get("/", follow_redirects=False)
+        assert root.status_code == 303 and root.headers["location"] == "/app"
+        public = client.get("/it/", follow_redirects=False)
+        assert public.status_code == 308 and public.headers["location"] == "https://emboxa.eu/it/"
+        assert client.get("/robots.txt").text == "User-agent: *\nDisallow: /\n"
+        sitemap_redirect = client.get("/sitemap.xml", follow_redirects=False)
+        assert sitemap_redirect.status_code == 308 and sitemap_redirect.headers["location"] == "https://emboxa.eu/sitemap.xml"
+        assert client.get("/en/imap-email-backup", follow_redirects=False).status_code == 308
         assert "noindex" in client.get("/app").headers["x-robots-tag"]
+
+        with TestClient(app) as guest:
+            root = guest.get("/", follow_redirects=False)
+            assert root.status_code == 303 and root.headers["location"] == "/login"
 
 
 def test_standard_export_can_be_kept_forever_when_admin_sets_zero_ttl(monkeypatch):

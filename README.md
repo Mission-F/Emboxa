@@ -66,6 +66,7 @@ Edit `.env` and set, at minimum:
 
 ```dotenv
 PUBLIC_APP_URL=http://YOUR_SERVER_IP:49273
+PUBLIC_SITE_URL=https://emboxa.eu
 COOKIE_SECURE=false
 ADMIN_EMAIL=admin@example.com
 ADMIN_PASSWORD=replace-with-a-long-unique-password
@@ -103,7 +104,8 @@ The screenshots use synthetic example mailboxes and files.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `WEB_PORT` | `49273` | Host port exposed by Compose |
-| `PUBLIC_APP_URL` | `http://localhost:49273` | Canonical browser/reverse-proxy URL |
+| `PUBLIC_APP_URL` | `https://app.emboxa.eu` | Canonical Web App URL used for auth, passkeys, OAuth callbacks and notifications |
+| `PUBLIC_SITE_URL` | `https://emboxa.eu` | Public marketing/legal site URL |
 | `COOKIE_SECURE` | `false` | Set to `true` when the public URL is HTTPS |
 | `ADMIN_EMAIL` | empty | Creates the first verified administrator |
 | `ADMIN_PASSWORD` | empty | Bootstrap only; remove after first login |

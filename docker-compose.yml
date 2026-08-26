@@ -11,6 +11,7 @@ services:
       ENCRYPTION_KEY_FILE: ${ENCRYPTION_KEY_FILE:-/data/secrets/fernet.key}
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:49273}
+      PUBLIC_SITE_URL: ${PUBLIC_SITE_URL:-https://emboxa.eu}
       APP_SECRET: ${APP_SECRET:-}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
