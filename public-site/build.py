@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import sys
@@ -29,6 +30,20 @@ PUBLIC_URL = os.getenv("PUBLIC_SITE_URL", PUBLIC_SITE_URL).rstrip("/")
 APP_URL = os.getenv("PUBLIC_APP_URL", PUBLIC_APP_URL).rstrip("/")
 GITHUB_URL = os.getenv("GITHUB_REPOSITORY_URL", GITHUB_REPOSITORY_URL).rstrip("/")
 STATIC_DIR = ROOT / "app" / "static"
+VERSIONED_ASSETS = ("design-system.css", "public.css", "public.js")
+
+
+def asset_versions() -> dict[str, str]:
+    """Short content hash per shipped asset.
+
+    _headers serves /static/* as `immutable` for a year, so a stable filename means returning
+    visitors keep the previous CSS forever. Hashing the bytes into the query string gives each
+    build a fresh URL while keeping the long cache lifetime valid.
+    """
+    return {
+        name: hashlib.sha256((STATIC_DIR / name).read_bytes()).hexdigest()[:12]
+        for name in VERSIONED_ASSETS
+    }
 
 
 def load_main_constant(name: str):
@@ -69,6 +84,7 @@ def render_pages() -> None:
         autoescape=select_autoescape(["html", "xml"]),
     )
     template = env.get_template("public.html")
+    assets = asset_versions()
     pages = ["home", *sorted(PUBLIC_PAGES)]
     for locale in ("it", "en"):
         for page in pages:
@@ -77,6 +93,7 @@ def render_pages() -> None:
             html = template.render(
                 locale=locale,
                 page=page,
+                assets=assets,
                 canonical=f"{PUBLIC_URL}/{locale}/" + path,
                 public_url=PUBLIC_URL,
                 app_url=APP_URL,
@@ -104,7 +121,7 @@ def render_pages() -> None:
 def copy_assets() -> None:
     target = DIST / "static"
     target.mkdir(parents=True, exist_ok=True)
-    for name in ("design-system.css", "public.css", "public.js", "manifest.webmanifest", "emboxa-home-visual.png"):
+    for name in (*VERSIONED_ASSETS, "manifest.webmanifest", "emboxa-home-visual.png"):
         shutil.copy2(STATIC_DIR / name, target / name)
     shutil.copytree(STATIC_DIR / "icons", target / "icons", dirs_exist_ok=True)
 
