@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
@@ -12,6 +13,14 @@ from .imap_adapter import RemoteFolder, RemoteMessage
 
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
 MICROSOFT_SCOPES = "openid email profile offline_access User.Read Mail.ReadWrite"
+
+
+class GraphError(RuntimeError):
+    """Microsoft Graph replied with an error; ``status`` keeps the HTTP code for retries."""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
 
 
 def _json_request(url: str, payload: dict | None = None, headers: dict | None = None, method: str | None = None):
@@ -73,6 +82,36 @@ def graph_bytes(access_token: str, path: str) -> bytes:
             return response.read()
     except Exception as exc:
         raise RuntimeError("Microsoft Graph message download failed") from exc
+
+
+def graph_request(
+    access_token: str,
+    method: str,
+    path: str,
+    body: bytes | dict | None = None,
+    content_type: str = "application/json",
+    timeout: int = 120,
+) -> dict:
+    """Call Graph and raise :class:`GraphError` with the real status code and detail."""
+    url = path if path.startswith("https://") else f"{GRAPH_ROOT}{path}"
+    payload = json.dumps(body).encode() if isinstance(body, dict) else body
+    headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
+    if payload is not None:
+        headers["Content-Type"] = content_type
+    request = Request(url, data=payload, headers=headers, method=method)
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+    except HTTPError as exc:
+        detail = ""
+        try:
+            detail = (json.loads(exc.read().decode() or "{}").get("error") or {}).get("message", "")
+        except Exception:
+            detail = ""
+        raise GraphError(exc.code, detail or f"Microsoft Graph error {exc.code}") from exc
+    except Exception as exc:
+        raise GraphError(0, "Microsoft Graph connection failed") from exc
+    return json.loads(raw.decode() or "{}") if raw else {}
 
 
 def microsoft_profile(access_token: str) -> dict:

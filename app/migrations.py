@@ -12,7 +12,7 @@ log = logging.getLogger("mailvault.migrations")
 
 
 def run_migrations() -> None:
-    """Small, versioned and idempotent migration runner for the appliance database."""
+    """Small, versioned and idempotent migration runner for the EMBOXA database."""
     ensure_data_dirs()
     with engine.begin() as conn:
         conn.execute(text(

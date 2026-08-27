@@ -4,10 +4,10 @@
 
 <h1 align="center">EMBOXA Self-Hosted</h1>
 
-<p align="center"><strong>Your email. Backed up, searchable and movable with IMAP Transfer.</strong></p>
+<p align="center"><strong>Your email. Backed up on your own hardware.</strong></p>
 
 <p align="center">
-  A modern, self-hosted email backup, archive and IMAP Transfer app for Docker and TrueNAS.<br>
+  A self-hosted email backup, archive and IMAP Transfer app, built to run at home — on a NAS, a Raspberry Pi-class box or any Docker host you control.<br>
   Preserve complete IMAP mailboxes, attachments and backup versions, then restore originals to Gmail, Outlook, Yahoo, iCloud or custom IMAP destinations.
 </p>
 
@@ -19,9 +19,7 @@
 </p>
 
 <p align="center">
-  <a href="#quick-start"><strong>Install self-hosted</strong></a>
-  ·
-  <a href="https://emboxa.eu">Online version</a>
+  <a href="#quick-start"><strong>Install on your server or NAS</strong></a>
 </p>
 
 ![EMBOXA dashboard](docs/screenshots/dashboard.jpg)
@@ -34,7 +32,7 @@
 - Provides a fast, webmail-style archive with search, filters and conversations.
 - Collects archived files in a dedicated Attachments view.
 - Imports and exports portable `.mailvault` archives; PLUS users can also import Apple Mail/Thunderbird-style `.mbox` exports as offline accounts without synchronization.
-- Uses IMAP Transfer to restore original RFC822 messages to Gmail, Outlook, Yahoo, iCloud or custom IMAP destinations, with folder preservation, duplicate checks, progress and cancellation.
+- Uses IMAP Transfer to restore archived messages to Gmail, Outlook, Yahoo, iCloud or custom IMAP destinations, with folder preservation, duplicate checks, progress and cancellation. Microsoft 365 mailboxes connected with OAuth are restored through Microsoft Graph instead of IMAP.
 - Runs as a multi-architecture container on Docker-compatible servers and TrueNAS Community.
 
 Free Standard accounts include **5 GB of storage and up to 2 mailboxes per user**. Administrators can change limits from the runtime settings panel; PLUS users are unlimited.
@@ -159,7 +157,19 @@ Admins can set **Export TTL (hours)** to `0` to keep generated export packages i
 
 ## Restore to mailbox (IMAP Transfer)
 
-Open **Transfers → Restore to mailbox** from the sidebar or a mailbox card. The guided flow lets you choose a completed backup version, a saved destination or a new Gmail, Outlook, Yahoo, iCloud or custom IMAP mailbox, and the folder layout. EMBOXA validates the destination before queueing, appends the original RFC822 bytes, preserves source folders by default and can skip messages whose `Message-ID` already exists. Temporary passwords are encrypted only for the queued job and erased at completion, failure or cancellation.
+Open **Ripristino** from the sidebar or a mailbox card. The guided flow lets you choose a completed backup version, a saved destination or a new Gmail, Outlook, Yahoo, iCloud or custom IMAP mailbox, and the folder layout. EMBOXA validates the destination before queueing, preserves source folders by default and can skip messages whose `Message-ID` already exists. Temporary passwords are encrypted only for the queued job and erased at completion, failure or cancellation.
+
+### Restore providers
+
+EMBOXA picks the delivery method from the destination mailbox, so the guided flow never asks which technology to use:
+
+| Destination | Provider | How messages are written |
+| --- | --- | --- |
+| Outlook, Hotmail, Live, Microsoft 365 connected with OAuth | Microsoft Graph | Folders are created on demand and messages are imported through Graph — never IMAP APPEND. The original MIME is imported when it fits; larger messages are rebuilt with subject, HTML body, recipients, dates and attachments (large attachments use Graph upload sessions). Expired access tokens are refreshed mid-restore and rotated refresh tokens are stored. |
+| Gmail with an app password | Gmail | Original RFC822 bytes via IMAP APPEND. |
+| Any other IMAP server | Generic IMAP | Original RFC822 bytes via IMAP APPEND. |
+
+Offline MBOX mailboxes have no server to restore into and are excluded from the destination list. Adding the provider layer is a matter of implementing `RestoreTarget` in `app/restore_providers.py` and returning it from `build_restore_target`.
 
 For Google Search Console, submit `https://emboxa.eu/sitemap.xml` after the public-domain setting points to the production HTTPS hostname.
 
@@ -175,7 +185,3 @@ For Google Search Console, submit `https://emboxa.eu/sitemap.xml` after the publ
 ## License
 
 Copyright © MissionF. The current repository is source-available under the status described in [`LICENSE.md`](LICENSE.md); a public open-source license has not yet been selected.
-
----
-
-Prefer not to self-host? Use [EMBOXA Web](https://emboxa.eu).

@@ -63,6 +63,7 @@ from .database import SessionLocal, get_db
 from .email_templates import password_reset_email, test_email, verification_email
 from .graph_adapter import exchange_code, graph_json, microsoft_authorize_url, microsoft_profile, refresh_access_token
 from .imap_adapter import test_imap_connection
+from .restore_providers import account_restore_support, build_restore_target
 from .imap_transfer import recover_interrupted_transfers, transfer_manager
 from .migrations import run_migrations
 from .mbox_import import MboxImportError, MboxSource, folder_name_from_upload, import_mbox_sources
@@ -94,7 +95,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("emboxa")
 BASE_DIR = Path(__file__).resolve().parent
-ASSET_VERSION = "20260826-2118"
+ASSET_VERSION = "20260827-0345"
 
 
 @asynccontextmanager
@@ -1659,16 +1660,17 @@ def _transfer_quota(db: Session, user: User) -> dict:
 
 
 def _destination_credentials(db: Session, user: User, destination: IMAPTransferDestinationPayload) -> dict:
+    """Resolve a restore destination and tag it with the provider that will write into it."""
     if destination.account_id is not None:
         account = db.get(Account, destination.account_id)
         if not account or account.owner_id != user.id:
-            raise HTTPException(404, "Destination mailbox not found")
-        if account.auth_provider != "imap":
-            raise HTTPException(409, "This destination does not support IMAP restore yet")
-        if not account.imap_enabled or not account.encrypted_password:
-            raise HTTPException(409, "Destination mailbox has no IMAP credentials")
+            raise HTTPException(404, "Casella di destinazione non trovata")
+        support = account_restore_support(account)
+        if not support["supported"]:
+            raise HTTPException(409, support["reason"])
         return {
             "account": account,
+            "provider": support["provider"],
             "label": account.display_name,
             "host": account.imap_host or "",
             "port": int(account.imap_port or 993),
@@ -1677,9 +1679,10 @@ def _destination_credentials(db: Session, user: User, destination: IMAPTransferD
             "password": decrypt_secret(account.encrypted_password),
         }
     if not all((destination.imap_host, destination.imap_port, destination.imap_username, destination.password)):
-        raise HTTPException(422, "Complete the temporary IMAP destination credentials")
+        raise HTTPException(422, "Completa le credenziali IMAP della casella temporanea")
     return {
         "account": None,
+        "provider": "imap",
         "label": destination.label.strip(),
         "host": destination.imap_host.strip(),
         "port": destination.imap_port,
@@ -1689,14 +1692,28 @@ def _destination_credentials(db: Session, user: User, destination: IMAPTransferD
     }
 
 
-def _test_destination(credentials: dict) -> dict:
+def _test_destination(credentials: dict, db: Session | None = None) -> dict:
+    """Validate the destination with the provider that will actually be used."""
+    if credentials.get("provider") == "microsoft_graph":
+        target = build_restore_target(credentials)
+        try:
+            result = target.probe()
+        except Exception as exc:
+            raise HTTPException(400, f"Verifica della casella Microsoft non riuscita: {exc}") from exc
+        # The probe consumes the refresh token; keep the rotated one or the restore would fail.
+        rotated = target.rotated_secret()
+        if rotated and credentials.get("account") is not None and db is not None:
+            credentials["account"].encrypted_password = encrypt_secret(rotated)
+            credentials["password"] = rotated
+            db.commit()
+        return result
     try:
         return test_imap_connection(
             credentials["host"], credentials["port"], credentials["security"],
             credentials["username"], credentials["password"],
         )
     except Exception as exc:
-        raise HTTPException(400, f"Destination IMAP connection failed: {exc}") from exc
+        raise HTTPException(400, f"Connessione IMAP alla destinazione non riuscita: {exc}") from exc
 
 
 def _transfer_json(job: IMAPTransferJob) -> dict:
@@ -1718,8 +1735,22 @@ def test_transfer_destination(
     payload: IMAPTransferTestPayload, user: User = Depends(current_user), db: Session = Depends(get_db)
 ):
     credentials = _destination_credentials(db, user, payload.destination)
-    result = _test_destination(credentials)
+    result = _test_destination(credentials, db)
     return {**result, "quota_consumed": False, "destination": credentials["label"]}
+
+
+def _restore_destinations(db: Session, user: User) -> list[dict]:
+    """Every owned mailbox that a restore can write into, with its provider label."""
+    accounts = db.scalars(select(Account).where(
+        Account.owner_id == user.id, Account.auth_provider != "mbox"
+    ).order_by(Account.display_name)).all()
+    items = []
+    for account in accounts:
+        support = account_restore_support(account)
+        if support["supported"]:
+            items.append({"id": account.id, "display_name": account.display_name, "email": account.email,
+                          "provider": support["provider"], "provider_label": support["label"]})
+    return items
 
 
 @app.get("/api/accounts/{account_id}/transfer-preview", dependencies=[Depends(current_user)])
@@ -1732,10 +1763,7 @@ def transfer_preview(
         "account": {"id": account.id, "display_name": account.display_name},
         "snapshot": {"id": snapshot.id, "messages": snapshot.message_count, "size": snapshot.archive_size},
         "folders": [{"id": folder.id, "name": folder.name, "messages": folder.message_count} for folder in folders],
-        "destinations": [{"id": item.id, "display_name": item.display_name, "email": item.email}
-                         for item in db.scalars(select(Account).where(
-                             Account.owner_id == user.id, Account.auth_provider == "imap"
-                         ).order_by(Account.display_name)).all()],
+        "destinations": _restore_destinations(db, user),
         "quota": _transfer_quota(db, user),
     }
 
@@ -1747,16 +1775,16 @@ def create_transfer(
     account, snapshot = _active_snapshot(db, account_id, payload.snapshot_id)
     quota = _transfer_quota(db, user)
     if quota["limit"] is not None and quota["remaining"] <= 0:
-        raise HTTPException(409, f"Monthly mailbox restore limit reached ({quota['limit']}). The quota resets next month.")
+        raise HTTPException(409, f"Limite mensile di ripristini raggiunto ({quota['limit']}). La quota si azzera il mese prossimo.")
     if payload.mode == "single" and not (payload.single_folder or "").strip():
-        raise HTTPException(422, "Choose a destination folder")
+        raise HTTPException(422, "Scegli una cartella di destinazione")
     source_folders = {item.name for item in db.scalars(select(Folder).where(Folder.snapshot_id == snapshot.id)).all()}
     mappings = {str(key).strip(): str(value).strip() for key, value in payload.mappings.items()
                 if str(key).strip() in source_folders and str(value).strip()}
     if any("\x00" in value or len(value) > 500 for value in mappings.values()):
-        raise HTTPException(422, "Invalid folder mapping")
+        raise HTTPException(422, "Mappatura delle cartelle non valida")
     credentials = _destination_credentials(db, user, payload.destination)
-    _test_destination(credentials)  # Validation/test never consumes quota; only the queued job below does.
+    _test_destination(credentials, db)  # Validation/test never consumes quota; only the queued job below does.
     job = IMAPTransferJob(
         owner_id=user.id, account_id=account.id, snapshot_id=snapshot.id,
         destination_account_id=credentials["account"].id if credentials["account"] else None,
@@ -1938,6 +1966,66 @@ def backup_activity(user: User = Depends(current_user), db: Session = Depends(ge
         "queued": sum(job.status == "queued" for job in jobs),
         "jobs": [_job_json(job) for job in jobs],
     }
+
+
+def _process_from_backup(job: BackupJob) -> dict:
+    return {
+        "kind": "backup", "id": job.id, "label": job.account.display_name,
+        "status": job.status, "percent": job.percent,
+        "detail": job.current_folder or _status_label(job.status),
+        "processed": job.processed_messages, "total": job.total_messages,
+        "eta_seconds": job.eta_seconds, "error": job.error,
+        "cancel_url": f"/api/jobs/{job.id}/cancel",
+    }
+
+
+def _process_from_transfer(job: IMAPTransferJob) -> dict:
+    return {
+        "kind": "transfer", "id": job.id, "label": f"Ripristino → {job.destination_label}",
+        "status": job.status, "percent": job.percent,
+        "detail": job.current_folder or _status_label(job.status),
+        "processed": job.processed_messages, "total": job.total_messages,
+        "eta_seconds": job.eta_seconds, "error": job.error,
+        "cancel_url": f"/api/imap-transfers/{job.id}/cancel",
+    }
+
+
+def _process_from_memory_job(kind: str, label: str, job: dict) -> dict:
+    return {
+        "kind": kind, "id": job["id"], "label": label,
+        "status": job["status"], "percent": job.get("percent", 0),
+        "detail": job.get("detail") or "", "processed": None, "total": None,
+        "eta_seconds": None, "error": job.get("error"), "cancel_url": None,
+    }
+
+
+def _status_label(status: str) -> str:
+    return {"queued": "In coda", "running": "In corso", "cancelling": "Annullamento…"}.get(status, status)
+
+
+@app.get("/api/active-processes", dependencies=[Depends(current_user)])
+def active_processes(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Unified, poll-friendly list of every backup, restore and import still running for this user.
+
+    Backups and IMAP Transfer restores are DB-backed (BackupJob/IMAPTransferJob), so they survive a
+    closed browser tab or a page reload. Archive/MBOX imports are tracked in-process only and are
+    included on a best-effort basis for the lifetime of the running server.
+    """
+    backups = db.scalars(select(BackupJob).where(
+        BackupJob.status.in_(["queued", "running", "cancelling"]),
+        BackupJob.account_id.in_(select(Account.id).where(Account.owner_id == user.id)),
+    ).order_by(BackupJob.created_at, BackupJob.id)).all()
+    transfers = db.scalars(select(IMAPTransferJob).where(
+        IMAPTransferJob.owner_id == user.id, IMAPTransferJob.status.in_(["queued", "running", "cancelling"]),
+    ).order_by(IMAPTransferJob.created_at, IMAPTransferJob.id)).all()
+    items = [_process_from_backup(job) for job in backups] + [_process_from_transfer(job) for job in transfers]
+    with IMPORT_JOB_LOCK:
+        items += [_process_from_memory_job("import", "Import archivio", job) for job in IMPORT_JOBS.values()
+                  if job["user_id"] == user.id and job["status"] in {"queued", "running"}]
+    with MBOX_IMPORT_LOCK:
+        items += [_process_from_memory_job("import", "Import MBOX", job) for job in MBOX_IMPORT_JOBS.values()
+                  if job["user_id"] == user.id and job["status"] in {"queued", "running"}]
+    return {"items": items, "count": len(items)}
 
 
 @app.get("/api/accounts/{account_id}/versions", dependencies=[Depends(current_user)])

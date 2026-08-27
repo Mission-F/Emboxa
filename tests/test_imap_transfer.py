@@ -78,7 +78,7 @@ def test_imap_transfer_quota_test_and_tenant_safety(monkeypatch):
         second = client.post(f"/api/accounts/{source_id}/transfers", headers=headers, json=body)
         third = client.post(f"/api/accounts/{source_id}/transfers", headers=headers, json=body)
         assert first.status_code == 200 and second.status_code == 200
-        assert third.status_code == 409 and "monthly" in third.text.lower()
+        assert third.status_code == 409 and "limite mensile" in third.text.lower()
         assert len(submitted) == 2
         listing = client.get("/api/imap-transfers").json()
         assert listing["quota"]["used"] == 2 and listing["quota"]["remaining"] == 0

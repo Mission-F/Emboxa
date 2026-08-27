@@ -33,7 +33,7 @@ def test_admin_settings_authorization_persistence_secrets_and_auth_ui(monkeypatc
         _login(normal_client, "settings-user@example.com", "settings-user-password")
         assert normal_client.get("/admin").status_code == 404
         assert normal_client.get("/api/admin/settings").status_code == 404
-        assert "Administration" not in normal_client.get("/app").text
+        assert "Amministrazione" not in normal_client.get("/app").text
 
     class DummySMTP:
         def __enter__(self): return self
@@ -51,7 +51,7 @@ def test_admin_settings_authorization_persistence_secrets_and_auth_ui(monkeypatc
 
     with TestClient(app) as admin_client:
         headers = _login(admin_client, "settings-admin@example.com", "settings-admin-password")
-        assert "Administration" in admin_client.get("/app").text
+        assert "Amministrazione" in admin_client.get("/app").text
         settings = admin_client.get("/api/admin/settings").json()
         for read_only in ("smtp_password_set", "smtp_password_masked", "telegram_connected",
                           "telegram_bot_token_set", "telegram_bot_token_masked", "telegram_links",

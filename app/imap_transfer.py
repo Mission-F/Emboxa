@@ -10,9 +10,9 @@ from sqlalchemy import select
 
 from .backup import snapshot_root
 from .database import SessionLocal
-from .imap_adapter import StandardIMAPAdapter
 from .models import Account, Folder, IMAPTransferJob, Message, utcnow
-from .security import decrypt_secret, safe_resolve
+from .restore_providers import RestoreTarget, build_restore_target, restore_provider_id
+from .security import decrypt_secret, encrypt_secret, safe_resolve
 from .settings_service import get_int_setting
 
 log = logging.getLogger("emboxa.imap_transfer")
@@ -25,27 +25,42 @@ class TransferCancelled(Exception):
 def _clean_folder(name: str) -> str:
     value = " ".join(str(name).replace("\x00", "").split()).strip()
     if not value or len(value) > 500:
-        raise RuntimeError("Invalid destination folder")
+        raise RuntimeError("Cartella di destinazione non valida")
     return value
 
 
-def _destination(job: IMAPTransferJob, db) -> tuple[StandardIMAPAdapter, str]:
+def _destination(job: IMAPTransferJob, db) -> tuple[RestoreTarget, str, Account | None]:
+    """Resolve the destination into the matching restore provider (Graph, Gmail or IMAP)."""
     if job.destination_account_id:
         account = db.get(Account, job.destination_account_id)
         if not account or account.owner_id != job.owner_id or not account.imap_enabled:
-            raise RuntimeError("Destination mailbox is no longer available")
-        password = decrypt_secret(account.encrypted_password)
-        return StandardIMAPAdapter(
-            account.imap_host or "", int(account.imap_port or 993), account.security,
-            account.imap_username or account.email, password,
-        ), account.display_name
+            raise RuntimeError("La casella di destinazione non è più disponibile")
+        if not account.encrypted_password:
+            raise RuntimeError("La casella di destinazione non ha credenziali salvate")
+        target = build_restore_target({
+            "provider": restore_provider_id(account),
+            "host": account.imap_host or "", "port": int(account.imap_port or 993),
+            "security": account.security, "username": account.imap_username or account.email,
+            "password": decrypt_secret(account.encrypted_password),
+        })
+        return target, account.display_name, account
     if not all((job.destination_host, job.destination_port, job.destination_security, job.destination_username,
                 job.encrypted_password)):
-        raise RuntimeError("Temporary destination credentials are unavailable")
-    return StandardIMAPAdapter(
-        job.destination_host, int(job.destination_port), job.destination_security,
-        job.destination_username, decrypt_secret(job.encrypted_password),
-    ), job.destination_label
+        raise RuntimeError("Credenziali della destinazione temporanea non disponibili")
+    target = build_restore_target({
+        "provider": "imap", "host": job.destination_host, "port": int(job.destination_port),
+        "security": job.destination_security, "username": job.destination_username,
+        "password": decrypt_secret(job.encrypted_password),
+    })
+    return target, job.destination_label, None
+
+
+def _persist_rotated_secret(db, target: RestoreTarget, account: Account | None) -> None:
+    """Store the refresh token when the OAuth provider rotated it mid-restore."""
+    rotated = target.rotated_secret()
+    if account and rotated:
+        account.encrypted_password = encrypt_secret(rotated)
+        db.commit()
 
 
 def _cancel_if_requested(db, job: IMAPTransferJob) -> None:
@@ -58,7 +73,7 @@ def _cancel_if_requested(db, job: IMAPTransferJob) -> None:
 
 def run_transfer(job_id: int) -> None:
     db = SessionLocal()
-    adapter: StandardIMAPAdapter | None = None
+    adapter: RestoreTarget | None = None
     job: IMAPTransferJob | None = None
     try:
         job = db.get(IMAPTransferJob, job_id)
@@ -69,12 +84,13 @@ def run_transfer(job_id: int) -> None:
         account = db.get(Account, job.account_id)
         snapshot = job.snapshot
         if not account or account.owner_id != job.owner_id or snapshot.account_id != account.id:
-            raise RuntimeError("Source archive is unavailable")
+            raise RuntimeError("Archivio di origine non disponibile")
         if snapshot.status not in {"completed", "active"}:
-            raise RuntimeError("Source snapshot is not ready")
+            raise RuntimeError("La versione di backup selezionata non è pronta")
 
-        adapter, destination_label = _destination(job, db)
+        adapter, destination_label, destination_account = _destination(job, db)
         adapter.connect()
+        _persist_rotated_secret(db, adapter, destination_account)
         job.status = "running"
         job.started_at = job.started_at or utcnow()
         job.error = None
@@ -97,8 +113,7 @@ def run_transfer(job_id: int) -> None:
         for folder in folders:
             _cancel_if_requested(db, job)
             target = _clean_folder(job.single_folder or mappings.get(folder.name) or folder.name)
-            adapter.ensure_folder(target)
-            adapter.select_write_folder(target)
+            adapter.prepare_folder(target)
             job.current_folder = folder.name
             db.commit()
             messages = db.scalars(select(Message).where(
@@ -108,7 +123,7 @@ def run_transfer(job_id: int) -> None:
             ).order_by(Message.id)).all()
             for message in messages:
                 _cancel_if_requested(db, job)
-                if job.skip_duplicates and message.message_id and adapter.has_message_id(message.message_id):
+                if job.skip_duplicates and message.message_id and adapter.has_message(message.message_id):
                     job.skipped_messages += 1
                 else:
                     raw_path = safe_resolve(
@@ -118,7 +133,7 @@ def run_transfer(job_id: int) -> None:
                         job.failed_messages += 1
                     else:
                         flags = json.loads(message.flags_json or "[]")
-                        adapter.append_message(target, raw_path.read_bytes(), flags, message.internal_date or message.date_utc)
+                        adapter.deliver(raw_path.read_bytes(), flags, message.internal_date or message.date_utc)
                 appended += 1
                 job.processed_messages = appended
                 job.percent = min(100, round(appended * 100 / max(1, job.total_messages)))
@@ -129,6 +144,7 @@ def run_transfer(job_id: int) -> None:
                 if appended % 10 == 0:
                     db.commit()
 
+        _persist_rotated_secret(db, adapter, destination_account)
         job.status = "completed"
         job.percent = 100
         job.eta_seconds = 0
