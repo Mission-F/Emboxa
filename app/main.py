@@ -14,6 +14,7 @@ import smtplib
 import threading
 import uuid
 from contextlib import asynccontextmanager
+from html import escape as html_escape
 from datetime import datetime, timedelta
 from email.message import EmailMessage
 from pathlib import Path, PurePosixPath
@@ -95,7 +96,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("emboxa")
 BASE_DIR = Path(__file__).resolve().parent
-ASSET_VERSION = "20260827-0345"
+ASSET_VERSION = "20260827-0530"
 
 
 @asynccontextmanager
@@ -1351,6 +1352,11 @@ def _telegram_call(method: str, payload: dict):
     return _telegram_request(token, method, payload)
 
 
+def _telegram_status_label(status: str) -> str:
+    return {"queued": "⏳ Queued", "running": "🔵 Running", "cancelling": "⏹ Cancelling",
+            "completed": "✅ Completed", "failed": "❌ Failed", "cancelled": "⏹ Cancelled"}.get(status, status.title())
+
+
 def _telegram_dashboard(db: Session, user: User) -> tuple[str, dict]:
     used = _storage_used(db, user.id); mailboxes = db.scalar(select(func.count(Account.id)).where(Account.owner_id == user.id)) or 0
     job = db.scalar(select(BackupJob).join(Account).where(Account.owner_id == user.id,
@@ -1358,11 +1364,18 @@ def _telegram_dashboard(db: Session, user: User) -> tuple[str, dict]:
     storage = "Unlimited" if user.plan == "PLUS" else f"{used / 1024**3:.1f} / {user.storage_limit_bytes / 1024**3:.0f} GB"
     mailbox_text = "Unlimited" if user.plan == "PLUS" else f"{mailboxes} / {get_int_setting('standard_mailbox_limit', STANDARD_MAILBOX_LIMIT, db)}"
     queue_position = (db.scalar(select(func.count(BackupJob.id)).where(BackupJob.status == "queued", BackupJob.id <= job.id)) or 0) if job and job.status == "queued" else 0
-    backup = "No active backup" if not job else (f"{job.status.title()} · {job.percent}%" if job.status != "queued" else f"Queued · Position {queue_position}")
+    backup = "No active backup" if not job else (f"{_telegram_status_label(job.status)} · {job.percent}%" if job.status != "queued" else f"⏳ Queued · position {queue_position}")
     transfers = db.scalar(select(func.count(IMAPTransferJob.id)).where(
         IMAPTransferJob.owner_id == user.id, IMAPTransferJob.status.in_(["queued", "running", "cancelling"])
     )) or 0
-    text_value = f"EMBOXA · PRIVATE EMAIL ARCHIVE\n\nPlan  {user.plan}\nStorage  {storage}\nMailboxes  {mailbox_text}\n\nBackup\n{backup}\n\nMailbox restores active  {transfers}"
+    text_value = (
+        f"📬 <b>EMBOXA</b> · Private email archive\n\n"
+        f"<b>Plan</b>  {html_escape(user.plan)}\n"
+        f"<b>Storage</b>  {html_escape(storage)}\n"
+        f"<b>Mailboxes</b>  {html_escape(mailbox_text)}\n\n"
+        f"<b>Backup</b>\n{backup}\n\n"
+        f"<b>Restores active</b>  {transfers}"
+    )
     keyboard = {"inline_keyboard": [[{"text": "📬 Mailboxes", "callback_data": "mailboxes"}, {"text": "▶️ Backup", "callback_data": "backup"}],
                                     [{"text": "📊 Activity", "callback_data": "status"}, {"text": "💾 Storage", "callback_data": "storage"}],
                                     [{"text": "🕘 History", "callback_data": "history"}, {"text": "⚙️ Settings", "callback_data": "settings"}],
@@ -1374,31 +1387,36 @@ def _telegram_render(db: Session, user: User, chat_id: str, message_id: str | No
     text_value, keyboard = _telegram_dashboard(db, user)
     accounts = db.scalars(select(Account).where(Account.owner_id == user.id).order_by(Account.display_name)).all()
     if view in {"mailboxes", "backup"}:
-        text_value = "Mailboxes\n\n" + ("\n".join(f"• {item.display_name}\n  {item.email} · {item.message_count:,} messages" for item in accounts) or "No mailboxes yet")
-        rows = [[{"text": f"Backup {item.display_name}", "callback_data": f"backup:{item.id}"}] for item in accounts] if view == "backup" else []
-        keyboard = {"inline_keyboard": rows + [[{"text": "Back", "callback_data": "dashboard"}]]}
+        text_value = "📬 <b>Mailboxes</b>\n\n" + ("\n".join(
+            f"• <b>{html_escape(item.display_name)}</b>\n  {html_escape(item.email)} · {item.message_count:,} messages" for item in accounts
+        ) or "No mailboxes yet")
+        rows = [[{"text": f"▶️ Backup {item.display_name}", "callback_data": f"backup:{item.id}"}] for item in accounts] if view == "backup" else []
+        keyboard = {"inline_keyboard": rows + [[{"text": "‹ Back", "callback_data": "dashboard"}]]}
     elif view == "status":
         jobs = db.scalars(select(BackupJob).join(Account).where(Account.owner_id == user.id).order_by(BackupJob.id.desc()).limit(5)).all()
-        text_value = "Backup status\n\n" + ("\n".join(f"{job.account.display_name}: {job.status} · {job.percent}% · ETA {job.eta_seconds or '—'}" for job in jobs) or "No backup history")
-        keyboard = {"inline_keyboard": [[{"text": "Back", "callback_data": "dashboard"}]]}
+        text_value = "📊 <b>Backup status</b>\n\n" + ("\n".join(
+            f"<b>{html_escape(job.account.display_name)}</b>: {_telegram_status_label(job.status)} · {job.percent}% · ETA {job.eta_seconds if job.eta_seconds is not None else '—'}"
+            for job in jobs
+        ) or "No backup history")
+        keyboard = {"inline_keyboard": [[{"text": "‹ Back", "callback_data": "dashboard"}]]}
     elif view == "storage":
         used = _storage_used(db, user.id)
         limit = "Unlimited" if user.plan == "PLUS" else f"{user.storage_limit_bytes / 1024**3:.0f} GB"
-        text_value = f"Storage\n\nUsed  {used / 1024**3:.2f} GB\nLimit  {limit}\n\nOriginal RFC822 messages and attachments are included."
-        keyboard = {"inline_keyboard": [[{"text": "Back", "callback_data": "dashboard"}]]}
+        text_value = f"💾 <b>Storage</b>\n\n<b>Used</b>  {used / 1024**3:.2f} GB\n<b>Limit</b>  {html_escape(limit)}\n\nOriginal RFC822 messages and attachments are included."
+        keyboard = {"inline_keyboard": [[{"text": "‹ Back", "callback_data": "dashboard"}]]}
     elif view == "history":
         backups = db.scalars(select(BackupJob).join(Account).where(Account.owner_id == user.id).order_by(BackupJob.id.desc()).limit(4)).all()
         transfers = db.scalars(select(IMAPTransferJob).where(IMAPTransferJob.owner_id == user.id).order_by(IMAPTransferJob.id.desc()).limit(4)).all()
-        lines = [f"Backup · {item.account.display_name} · {item.status}" for item in backups]
-        lines += [f"Restore · {item.destination_label} · {item.status}" for item in transfers]
-        text_value = "Recent history\n\n" + ("\n".join(lines) or "No completed operations yet")
-        keyboard = {"inline_keyboard": [[{"text": "Back", "callback_data": "dashboard"}]]}
+        lines = [f"▶️ Backup · {html_escape(item.account.display_name)} · {_telegram_status_label(item.status)}" for item in backups]
+        lines += [f"⇄ Restore · {html_escape(item.destination_label)} · {_telegram_status_label(item.status)}" for item in transfers]
+        text_value = "🕘 <b>Recent history</b>\n\n" + ("\n".join(lines) or "No completed operations yet")
+        keyboard = {"inline_keyboard": [[{"text": "‹ Back", "callback_data": "dashboard"}]]}
     elif view == "settings":
         link = db.scalar(select(TelegramLink).where(TelegramLink.user_id == user.id))
         enabled = [] if not link else [label for value, label in ((link.notify_completed,"Completed"),(link.notify_failed,"Failed"),(link.notify_expiring,"Expiring"),(link.notify_storage,"Storage")) if value]
-        text_value = "Notification settings\n\nEnabled: " + (", ".join(enabled) or "None") + "\n\nChange these preferences in Emboxa Web → Preferences."
-        keyboard = {"inline_keyboard": [[{"text": "Open Emboxa Web", "url": get_setting("public_domain", PUBLIC_APP_URL).rstrip("/") + "/app"}], [{"text": "Back", "callback_data": "dashboard"}]]}
-    payload = {"chat_id": chat_id, "text": text_value, "reply_markup": keyboard}
+        text_value = "⚙️ <b>Notification settings</b>\n\n<b>Enabled</b>  " + (", ".join(enabled) or "None") + "\n\nChange these preferences in Emboxa Web → Preferences."
+        keyboard = {"inline_keyboard": [[{"text": "Open Emboxa Web", "url": get_setting("public_domain", PUBLIC_APP_URL).rstrip("/") + "/app"}], [{"text": "‹ Back", "callback_data": "dashboard"}]]}
+    payload = {"chat_id": chat_id, "text": text_value, "parse_mode": "HTML", "reply_markup": keyboard}
     if message_id:
         payload["message_id"] = int(message_id)
         return _telegram_call("editMessageText", payload)
@@ -1461,8 +1479,17 @@ async def telegram_webhook(request: Request, db: Session = Depends(get_db)):
     update = await request.json(); message = update.get("message") or {}; callback = update.get("callback_query") or {}
     chat_id = str((callback.get("message") or message).get("chat", {}).get("id", ""))
     if message.get("text") == "/start":
-        _telegram_call("sendMessage", {"chat_id": chat_id, "text": f"Welcome to EMBOXA\n\nYour Chat ID:\n{chat_id}\n\nCopy it into Emboxa Web → Preferences → Telegram. Then use Send test dashboard to create your single interactive dashboard message.",
-                                       "reply_markup": {"inline_keyboard": [[{"text": "Open Emboxa Web", "url": get_setting("public_domain", PUBLIC_APP_URL).rstrip("/") + "/app"}]]}})
+        _telegram_call("sendMessage", {
+            "chat_id": chat_id,
+            "text": (
+                f"📬 <b>Welcome to EMBOXA</b>\n\n"
+                f"Your Chat ID:\n<code>{chat_id}</code>\n\n"
+                f"Tap to copy, then paste it into <b>Emboxa Web → Preferences → Telegram</b> "
+                f"and use <b>Send test dashboard</b> to create your interactive dashboard message here."
+            ),
+            "parse_mode": "HTML",
+            "reply_markup": {"inline_keyboard": [[{"text": "Open Emboxa Web", "url": get_setting("public_domain", PUBLIC_APP_URL).rstrip("/") + "/app"}]]},
+        })
         return {"ok": True}
     link = db.scalar(select(TelegramLink).where(TelegramLink.chat_id == chat_id))
     if not link:

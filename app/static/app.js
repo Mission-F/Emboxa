@@ -392,6 +392,7 @@ async function openArchive(account) {
   state.account=account; state.folderId=null; state.trash=false; state.archiveView='messages'; state.page=1; state.filters={};
   $('#dashboard').classList.add('hidden'); $('#archive').classList.remove('hidden'); $('#search-wrap').classList.remove('hidden');
   $('#archive-name').textContent=account.display_name; $('#archive-email').textContent=account.email; $('#archive-avatar').textContent=account.display_name.charAt(0).toUpperCase(); $('#reader').innerHTML=emptyReader();
+  $('#mobile-mailbox-label').textContent=account.display_name; $('#mobile-mailbox-label').classList.remove('hidden');
   state.versions=await api(`/api/accounts/${account.id}/versions`); state.snapshotId=state.versions.find(version=>version.current)?.id||state.versions[0]?.id||null; renderVersions();
   state.folders=await api(`/api/accounts/${account.id}/folders?${snapshotParam()}`); renderFolders(); await Promise.all([loadMessages(),loadStats()]);
 }
@@ -507,7 +508,8 @@ $('#attachment-filter').addEventListener('change',event=>{state.attachments.cate
 $('#attachments-grid-button').addEventListener('click',()=>{state.attachments.mode='grid';$('#attachments-grid-button').classList.add('active');$('#attachments-list-button').classList.remove('active');loadAttachments();});
 $('#attachments-list-button').addEventListener('click',()=>{state.attachments.mode='list';$('#attachments-list-button').classList.add('active');$('#attachments-grid-button').classList.remove('active');loadAttachments();});
 $('#attachments-prev').addEventListener('click',()=>{if(state.attachments.page>1){state.attachments.page--;loadAttachments();}});$('#attachments-next').addEventListener('click',()=>{if(state.attachments.page*state.attachments.pageSize<state.attachments.total){state.attachments.page++;loadAttachments();}});
-function showDashboard(){state.account=null;$('#archive').classList.add('hidden');$('#dashboard').classList.remove('hidden');$('#search-wrap').classList.add('hidden');$('#search-input').value='';$('.folder-sidebar').classList.remove('open');loadAccounts();}
+function showDashboard(){state.account=null;$('#archive').classList.add('hidden');$('#dashboard').classList.remove('hidden');$('#search-wrap').classList.add('hidden');$('#search-input').value='';$('.folder-sidebar').classList.remove('open');$('#mobile-mailbox-label').classList.add('hidden');loadAccounts();}
+$('#mobile-mailbox-label').addEventListener('click',()=>$('#folder-sidebar').classList.toggle('open'));
 $('#archive-back').addEventListener('click',showDashboard);$('#home-button').addEventListener('click',showDashboard);
 $('#mobile-folders').addEventListener('click',()=>{const target=state.account?$('#folder-sidebar'):$('.main-sidebar');target.classList.toggle('open');});
 $('#nav-dashboard').addEventListener('click',()=>{showDashboard();$('#account-grid').scrollIntoView({behavior:'smooth',block:'start'});$('.main-sidebar').classList.remove('open');});

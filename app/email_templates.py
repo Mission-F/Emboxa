@@ -13,16 +13,21 @@ def transactional_email(
     support_email: str,
     public_url: str,
     code: str | None = None,
+    code_caption: str | None = None,
     action_label: str | None = None,
     action_url: str | None = None,
     note: str = "If you did not request this, you can safely ignore this email.",
     logo_url: str | None = None,
     footer_text: str = "MissionF",
 ) -> tuple[str, str]:
-    """Return a conservative multipart email body shared by all transactional messages."""
+    """Return a conservative multipart email body shared by all transactional messages.
+
+    The code is never split with a space: it must paste into the 6-digit verification
+    field exactly as shown. Visual grouping comes only from CSS letter-spacing.
+    """
     plain = ["EMBOXA", "", title, "", intro]
     if code:
-        plain.extend(["", " ".join((code[:3], code[3:])), ""])
+        plain.extend(["", code, ""])
     if action_label and action_url:
         plain.extend(["", f"{action_label}: {action_url}"])
     plain.extend(["", note, "", footer_text, support_email])
@@ -35,11 +40,16 @@ def transactional_email(
     logo = logo_url or f"{public_url.rstrip('/')}/static/icons/emboxa-192.png"
     code_html = ""
     if code:
+        caption_html = (
+            f'<div style="margin-top:10px;color:#8b93a3;font:12px/1.5 Arial,sans-serif">{escape(code_caption)}</div>'
+            if code_caption else ""
+        )
         code_html = (
-            '<tr><td style="padding:8px 32px 28px">'
-            f'<div style="padding:18px 16px;border:1px solid {PALETTE["grey"]};border-radius:12px;'
-            f'background:#f8f8f7;color:{PALETTE["navy"]};font:700 30px/1.2 Arial,sans-serif;'
-            f'letter-spacing:8px;text-align:center">{escape(" ".join((code[:3], code[3:])))}</div></td></tr>'
+            '<tr><td style="padding:8px 32px 30px">'
+            f'<div style="padding:20px 16px;border:1px solid {PALETTE["orange"]};border-radius:12px;'
+            f'background:#fff8ec;color:{PALETTE["navy"]};font:700 32px/1.2 \'Courier New\',Courier,monospace;'
+            f'letter-spacing:10px;text-align:center;-webkit-user-select:all;user-select:all">{escape(code)}</div>'
+            f'{caption_html}</td></tr>'
         )
     cta_html = ""
     if action_label and action_url:
@@ -50,7 +60,7 @@ def transactional_email(
             f'font:700 15px Arial,sans-serif">{escape(action_label)}</a></td></tr>'
         )
     html = f"""<!doctype html>
-<html><body style="margin:0;padding:0;background:#f3f3f1;color:{PALETTE['navy']}">
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Type" content="text/html; charset=utf-8"></head><body style="margin:0;padding:0;background:#f3f3f1;color:{PALETTE['navy']}">
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f3f3f1"><tr><td align="center" style="padding:28px 12px">
 <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="max-width:560px;border:1px solid {PALETTE['grey']};border-radius:18px;background:{PALETTE['white']}">
 <tr><td style="padding:26px 32px 18px"><table role="presentation" cellspacing="0" cellpadding="0" border="0"><tr>
@@ -68,12 +78,12 @@ def transactional_email(
 
 
 VERIFY_COPY = {
-    "it": ("Verifica la tua email", "Usa questo codice per completare la registrazione gratuita a EMBOXA. Scade tra 15 minuti."),
-    "en": ("Verify your email", "Use this code to complete your free EMBOXA account registration. It expires in 15 minutes."),
-    "fr": ("Vérifiez votre e-mail", "Utilisez ce code pour terminer votre inscription gratuite à EMBOXA. Il expire dans 15 minutes."),
-    "de": ("E-Mail bestätigen", "Verwenden Sie diesen Code, um Ihre kostenlose EMBOXA-Registrierung abzuschließen. Er läuft in 15 Minuten ab."),
-    "es": ("Verifica tu correo", "Usa este código para completar tu registro gratuito en EMBOXA. Caduca en 15 minutos."),
-    "pt": ("Verifique o seu e-mail", "Use este código para concluir o registo gratuito na EMBOXA. Expira em 15 minutos."),
+    "it": ("Verifica la tua email", "Usa questo codice per completare la registrazione gratuita a EMBOXA. Scade tra 15 minuti.", "Incollalo così com'è nella pagina di verifica."),
+    "en": ("Verify your email", "Use this code to complete your free EMBOXA account registration. It expires in 15 minutes.", "Paste it exactly as shown on the verification page."),
+    "fr": ("Vérifiez votre e-mail", "Utilisez ce code pour terminer votre inscription gratuite à EMBOXA. Il expire dans 15 minutes.", "Collez-le tel quel sur la page de vérification."),
+    "de": ("E-Mail bestätigen", "Verwenden Sie diesen Code, um Ihre kostenlose EMBOXA-Registrierung abzuschließen. Er läuft in 15 Minuten ab.", "Fügen Sie ihn genau so auf der Bestätigungsseite ein."),
+    "es": ("Verifica tu correo", "Usa este código para completar tu registro gratuito en EMBOXA. Caduca en 15 minutos.", "Pégalo tal cual en la página de verificación."),
+    "pt": ("Verifique o seu e-mail", "Use este código para concluir o registo gratuito na EMBOXA. Expira em 15 minutos.", "Cole-o exatamente assim na página de verificação."),
 }
 
 RESET_COPY = {
@@ -85,13 +95,24 @@ RESET_COPY = {
     "pt": ("Redefina a palavra-passe", "Recebemos um pedido para escolher uma nova palavra-passe EMBOXA. Esta ligação expira numa hora.", "Redefinir palavra-passe"),
 }
 
+NOTE_COPY = {
+    "it": "Se non hai richiesto tu questa email, puoi ignorarla in tutta sicurezza.",
+    "en": "If you did not request this, you can safely ignore this email.",
+    "fr": "Si vous n’êtes pas à l’origine de cette demande, vous pouvez ignorer cet e-mail en toute sécurité.",
+    "de": "Wenn Sie dies nicht angefordert haben, können Sie diese E-Mail ignorieren.",
+    "es": "Si no has solicitado esto, puedes ignorar este correo sin problema.",
+    "pt": "Se não foi você a pedir isto, pode ignorar este e-mail com segurança.",
+}
+
 
 def verification_email(code: str, *, support_email: str, public_url: str, logo_url: str = "", footer_text: str = "MissionF", locale: str = "en") -> tuple[str, str]:
-    title, intro = VERIFY_COPY.get(locale, VERIFY_COPY["en"])
+    title, intro, caption = VERIFY_COPY.get(locale, VERIFY_COPY["en"])
     return transactional_email(
         title=title,
         intro=intro,
         code=code,
+        code_caption=caption,
+        note=NOTE_COPY.get(locale, NOTE_COPY["en"]),
         support_email=support_email,
         public_url=public_url,
         logo_url=logo_url or None,
@@ -106,6 +127,7 @@ def password_reset_email(url: str, *, support_email: str, public_url: str, logo_
         intro=intro,
         action_label=action,
         action_url=url,
+        note=NOTE_COPY.get(locale, NOTE_COPY["en"]),
         support_email=support_email,
         public_url=public_url,
         logo_url=logo_url or None,

@@ -20,6 +20,8 @@
 
 <p align="center">
   <a href="#quick-start"><strong>Install on your server or NAS</strong></a>
+  ·
+  <a href="https://emboxa.eu">Try the free hosted version</a>
 </p>
 
 ![EMBOXA dashboard](docs/screenshots/dashboard.jpg)

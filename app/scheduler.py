@@ -4,6 +4,7 @@ import logging
 import shutil
 import threading
 from datetime import timedelta
+from html import escape as html_escape
 from pathlib import Path
 
 from sqlalchemy import select, text
@@ -104,7 +105,8 @@ class IntegratedScheduler:
                 days = max(1, (snapshot.expires_at - now).days + 1); key = f"expiring:{snapshot.id}:7"
                 if not db.scalar(select(NotificationDelivery).where(NotificationDelivery.user_id == snapshot.account.owner_id,
                                                                     NotificationDelivery.event_key == key)):
-                    if notify_user(snapshot.account.owner_id, f"{snapshot.account.display_name} expires in {days} days.", "notify_expiring"):
+                    text = f"⏳ <b>{html_escape(snapshot.account.display_name)}</b> expires in {days} day{'s' if days != 1 else ''}."
+                    if notify_user(snapshot.account.owner_id, text, "notify_expiring"):
                         db.add(NotificationDelivery(user_id=snapshot.account.owner_id, event_key=key))
             for user in db.scalars(select(User).where(User.plan == "STANDARD", User.storage_limit_bytes > 0)).all():
                 used = user_storage_used(db, user.id)
@@ -112,14 +114,14 @@ class IntegratedScheduler:
                 key = f"storage:{threshold}"
                 if threshold and not db.scalar(select(NotificationDelivery).where(NotificationDelivery.user_id == user.id,
                                                                                    NotificationDelivery.event_key == key)):
-                    if notify_user(user.id, f"Storage is {threshold}% full.", "notify_storage"):
+                    if notify_user(user.id, f"💾 Storage is <b>{threshold}%</b> full.", "notify_storage"):
                         db.add(NotificationDelivery(user_id=user.id, event_key=key))
             locks = db.scalars(select(PermanentMailboxHistory).where(PermanentMailboxHistory.locked_until <= now)).all()
             for lock in locks:
                 key = f"permanent-lock:{lock.id}"
                 if not db.scalar(select(NotificationDelivery).where(NotificationDelivery.user_id == lock.user_id,
                                                                     NotificationDelivery.event_key == key)):
-                    if notify_user(lock.user_id, "Permanent mailbox lock expired.", "notify_expiring"):
+                    if notify_user(lock.user_id, "🔓 Permanent mailbox lock expired.", "notify_expiring"):
                         db.add(NotificationDelivery(user_id=lock.user_id, event_key=key))
             db.commit()
 

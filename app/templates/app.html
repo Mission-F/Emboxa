@@ -6,6 +6,7 @@
   <meta name="csrf-token" content="{{ csrf_token }}">
   <meta name="robots" content="noindex,nofollow"><meta name="web-plan" content="{{ web_user.plan }}">
   <meta name="theme-color" content="#0B1F3A"><meta name="application-name" content="EMBOXA"><meta name="apple-mobile-web-app-title" content="EMBOXA">
+  <meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default">
   <title>EMBOXA · Archivio email privato</title>
   <link rel="icon" href="/static/icons/favicon-64.png" type="image/png"><link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png"><link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="stylesheet" href="/static/styles.css?v={{ asset_version }}">
@@ -20,6 +21,7 @@
       <img class="brand-logo" src="/static/icons/emboxa-192.png" alt="">
       <span class="wordmark">EMBOXA</span>
     </button>
+    <button id="mobile-mailbox-label" class="mobile-mailbox hidden" type="button" aria-label="Apri navigazione"></button>
     <div id="search-wrap" class="search hidden" role="search">
       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
       <input id="search-input" type="search" placeholder="Cerca email" aria-label="Cerca email" autocomplete="off">

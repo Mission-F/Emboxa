@@ -361,8 +361,8 @@ def test_web_multitenant_plans_retention_cleanup_telegram_and_public(monkeypatch
         registered = client.post("/api/register", json={"email": "user@example.com", "password": "secure-user-password"})
         assert registered.status_code == 200, registered.text
         assert sent[-1][3] and "EMBOXA" in sent[-1][3] and "Verify your email" in sent[-1][3]
-        code_parts = re.search(r"\b(\d{3})\s+(\d{3})\b", sent[-1][2]).groups()
-        code = "".join(code_parts)
+        # The code must be copy-paste safe: no inserted space, exactly the 6 digits the form expects.
+        code = re.search(r"\b(\d{6})\b", sent[-1][2]).group(1)
         verified = client.post("/api/verify", json={"email": "user@example.com", "code": code})
         assert verified.status_code == 200
         headers = csrf(client)

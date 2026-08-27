@@ -109,8 +109,30 @@ def copy_assets() -> None:
     shutil.copytree(STATIC_DIR / "icons", target / "icons", dirs_exist_ok=True)
 
 
+def locale_redirect_page(target: str, label: str) -> str:
+    """A tiny redirect page: picks it/en from the browser language, then falls back to a meta-refresh
+    for clients without JS. Used for every bare, locale-less path (e.g. /privacy) so it responds with
+    real content instead of a 404, matching how the homepage already redirects '/' to '/en/'."""
+    return (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f'<title>Emboxa Web</title>'
+        f"<script>const lang=(navigator.language||'en').toLowerCase().startsWith('it')?'it':'en';"
+        f"location.replace('/'+lang+'/{target}');</script>"
+        f'<meta http-equiv="refresh" content="0; url=/en/{target}"></head>'
+        f'<body><p><a href="/en/{target}">{label}</a></p></body></html>'
+    )
+
+
 def render_index() -> None:
-    write(DIST / "index.html", """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Emboxa Web</title><script>const lang=(navigator.language||'en').toLowerCase().startsWith('it')?'it':'en';location.replace('/'+lang+'/');</script><meta http-equiv="refresh" content="0; url=/en/"></head><body><p><a href="/en/">Continue to Emboxa Web</a></p></body></html>""")
+    write(DIST / "index.html", locale_redirect_page("", "Continue to Emboxa Web"))
+
+
+def render_bare_pages() -> None:
+    """Every public page also responds at its bare, locale-less path (emboxa.eu/privacy, not just
+    /it/privacy or /en/privacy), redirecting to the visitor's language like the homepage already does."""
+    for page in sorted(PUBLIC_PAGES):
+        write(DIST / page / "index.html", locale_redirect_page(f"{page}/", "Continue"))
 
 
 def render_redirects() -> None:
@@ -160,6 +182,7 @@ def main() -> None:
     DIST.mkdir(parents=True)
     render_pages()
     render_index()
+    render_bare_pages()
     render_redirects()
     render_headers()
     render_robots_and_sitemap()

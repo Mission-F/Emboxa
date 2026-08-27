@@ -83,6 +83,10 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .brand-mark.small { width: 34px; height: 34px; border-radius: 9px; }
 .brand-mark.small svg { width: 22px; height: 22px; }
 .wordmark { font-size: 18px; font-weight: 850; letter-spacing: .055em; }
+/* Mobile-only: names the open mailbox in the topbar, since the account identity normally lives in
+   the folder drawer, which is off-canvas on small screens. Tapping it opens that drawer. */
+.mobile-mailbox { display: none; min-width: 0; padding: 7px 10px; border: 0; border-radius: 10px; background: transparent; color: var(--heading); font-size: 13px; font-weight: 800; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mobile-mailbox:active { background: var(--surface-secondary); }
 .top-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; }
 .icon-button { width: 40px; height: 40px; display: inline-grid; place-items: center; padding: 0; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-secondary); }
 .icon-button:hover { background: var(--surface-secondary); color: var(--heading); }
@@ -358,6 +362,7 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 
 @media (max-width: 640px) {
   .topbar { flex-wrap: nowrap; }
+  .mobile-mailbox:not(.hidden) { display: block; flex: 1 1 auto; }
   .top-actions { gap: 2px; }
   .theme-control { width: 40px; padding: 0; justify-content: center; border: 0; }
   .theme-control select { position: absolute; width: 40px; opacity: 0; }
