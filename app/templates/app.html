@@ -9,8 +9,8 @@
   <meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-status-bar-style" content="default">
   <title>EMBOXA · Archivio email privato</title>
   <link rel="icon" href="/static/icons/favicon-64.png" type="image/png"><link rel="apple-touch-icon" href="/static/icons/apple-touch-icon.png"><link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="stylesheet" href="/static/design-system.css?v={{ asset_version }}">
   <link rel="stylesheet" href="/static/styles.css?v={{ asset_version }}">
-  <link rel="stylesheet" href="/static/shared-tokens.css?v={{ asset_version }}">
 </head>
 <body>
   <header class="topbar">
@@ -40,7 +40,7 @@
 
   <div id="dashboard" class="dashboard-shell">
     <aside class="main-sidebar" aria-label="Navigazione principale">
-      <div class="sidebar-head"><a class="sidebar-brand" href="/app" title="EMBOXA"><img src="/static/icons/emboxa-192.png" alt=""><span>EMBOXA</span></a></div>
+      <div class="sidebar-head"><div class="sidebar-profile" title="{{ web_user.email }}"><span class="profile-avatar">{{ web_user.email[:1]|upper }}</span><div><b>{{ web_user.email }}</b><small>Piano {{ web_user.plan }}</small></div></div></div>
       <nav class="sidebar-nav">
         <button id="nav-dashboard" class="nav-item active" type="button" title="Caselle e archivi"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1"/><rect x="14" y="4" width="6" height="6" rx="1"/><rect x="4" y="14" width="6" height="6" rx="1"/><rect x="14" y="14" width="6" height="6" rx="1"/></svg><span>Dashboard</span></button>
         <button id="nav-transfers" class="nav-item" type="button" title="Ripristina in una casella"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h11m0 0-3-3m3 3-3 3M17 17H6m0 0 3 3m-3-3 3-3"/></svg><span>Ripristino</span></button>
@@ -48,7 +48,7 @@
         <button id="nav-settings" class="nav-item" type="button" title="Preferenze"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg><span>Preferenze</span></button>
         {% if web_user.role == 'admin' %}<a class="nav-item" href="/admin"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 4.5 6v5.5c0 4.4 3 7.6 7.5 9.5 4.5-1.9 7.5-5.1 7.5-9.5V6L12 3Z"/><path d="M9.5 12 11 13.5l3.5-4"/></svg><span>Amministrazione</span></a>{% endif %}
       </nav>
-      <footer class="sidebar-footer"><div class="sidebar-profile"><span class="profile-avatar">{{ web_user.email[:1]|upper }}</span><div><b>{{ web_user.email }}</b><small>{{ web_user.plan }}</small></div></div><button id="sidebar-collapse" class="nav-item sidebar-collapse" type="button" aria-label="Comprimi menu" title="Comprimi menu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg><span>Comprimi</span></button></footer>
+      <footer class="sidebar-footer"><div class="privacy-note"><span></span><div><strong>Archivio privato</strong><small>Nessuna lettura da terzi</small></div></div><button id="sidebar-collapse" class="nav-item sidebar-collapse" type="button" aria-label="Comprimi menu" title="Comprimi menu"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg><span>Comprimi</span></button></footer>
     </aside>
 
     <main class="dashboard page">
@@ -71,7 +71,7 @@
     <aside id="folder-sidebar" class="folder-sidebar">
       <div class="archive-account">
         <button id="archive-back" class="back-button" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>Dashboard</button>
-        <div class="archive-identity"><span id="archive-avatar" class="account-avatar"></span><div><h2 id="archive-name"></h2><p id="archive-email" class="muted"></p></div></div>
+        <div class="archive-identity"><span id="archive-avatar" class="ds-avatar account-avatar"></span><div><h2 id="archive-name"></h2><p id="archive-email" class="muted"></p></div></div>
       </div>
       <div class="version-picker"><label for="version-select">Versione backup</label><select id="version-select"></select><button id="versions-button" class="text-button" type="button">Dettagli versioni</button></div>
       <div id="protection-warning" class="protection-warning hidden"></div>

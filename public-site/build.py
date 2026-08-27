@@ -104,7 +104,7 @@ def render_pages() -> None:
 def copy_assets() -> None:
     target = DIST / "static"
     target.mkdir(parents=True, exist_ok=True)
-    for name in ("public.css", "public.js", "manifest.webmanifest", "emboxa-home-visual.png"):
+    for name in ("design-system.css", "public.css", "public.js", "manifest.webmanifest", "emboxa-home-visual.png"):
         shutil.copy2(STATIC_DIR / name, target / name)
     shutil.copytree(STATIC_DIR / "icons", target / "icons", dirs_exist_ok=True)
 

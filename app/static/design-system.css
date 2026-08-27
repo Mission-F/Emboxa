@@ -1,0 +1,543 @@
+/* ==========================================================================
+   EMBOXA Design System
+   Single source of truth for tokens and primitive components.
+   Loaded first by the web app, the auth pages, the admin panel and the public
+   site, so landing and product share one visual language.
+
+   Palette is fixed and non-negotiable: black, prussian blue, orange,
+   alabaster grey, white. Everything below is derived from those five.
+   ========================================================================== */
+
+:root {
+  /* --- Brand palette (the only five source colours) --- */
+  --black: #000000;
+  --prussian-blue: #14213d;
+  --orange: #fca311;
+  --alabaster-grey: #e5e5e5;
+  --white: #ffffff;
+
+  /* --- Derived ink scale (prussian blue tinted, never neutral grey) --- */
+  --ink-900: #0a1428;
+  --ink-800: #14213d;
+  --ink-700: #24334f;
+  --ink-600: #3d4c6a;
+  --ink-500: #5c6a85;
+  --ink-400: #8592a8;
+  --ink-300: #b3bcca;
+  --ink-200: #d6dbe3;
+  --ink-100: #e9ecf1;
+  --ink-050: #f4f6f9;
+
+  /* --- Semantic surfaces (light) --- */
+  --bg: #f4f6f9;
+  --surface: #ffffff;
+  --surface-secondary: #f4f6f9;
+  --surface-sunken: #eef1f6;
+  --surface-active: rgba(252, 163, 17, .10);
+  --surface-inverse: #14213d;
+
+  --text: #14213d;
+  --heading: #0a1428;
+  --text-secondary: #5c6a85;
+  --text-tertiary: #8592a8;
+  --text-inverse: #ffffff;
+
+  --border: #e2e6ed;
+  --border-strong: #cfd6e0;
+  --border-subtle: rgba(20, 33, 61, .07);
+
+  /* --- Accent --- */
+  --accent: #fca311;
+  --accent-hover: #e08c00;
+  --accent-strong: #b96f00;
+  --accent-text: #14213d;
+  --accent-soft: rgba(252, 163, 17, .12);
+  --accent-softer: rgba(252, 163, 17, .06);
+  --accent-ring: rgba(252, 163, 17, .32);
+
+  /* --- Status --- */
+  --danger: #b4232f;
+  --danger-soft: rgba(180, 35, 47, .09);
+  --success: #16734a;
+  --success-soft: rgba(22, 115, 74, .10);
+  --warning: #9a6200;
+  --warning-soft: rgba(154, 98, 0, .10);
+  --info: #24334f;
+  --info-soft: rgba(36, 51, 79, .07);
+
+  /* --- Radius: one control radius, one card radius, one sheet radius.
+         Pills are reserved for badges and filter chips, never for buttons. --- */
+  --r-xs: 6px;
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 18px;
+  --r-xl: 26px;
+  --r-pill: 999px;
+
+  /* Legacy aliases kept so existing rules stay on the system */
+  --radius-sm: var(--r-sm);
+  --radius-md: var(--r-md);
+  --radius-lg: var(--r-lg);
+  --emboxa-radius-control: var(--r-sm);
+  --emboxa-radius-card: var(--r-lg);
+
+  /* --- Spacing, 4px base --- */
+  --s-1: 4px;  --s-2: 8px;  --s-3: 12px; --s-4: 16px;
+  --s-5: 20px; --s-6: 24px; --s-8: 32px; --s-10: 40px;
+  --s-12: 48px; --s-16: 64px; --s-20: 80px;
+
+  /* --- Elevation: three levels, no more --- */
+  --e-1: 0 1px 2px rgba(20, 33, 61, .05), 0 1px 3px rgba(20, 33, 61, .04);
+  --e-2: 0 4px 12px rgba(20, 33, 61, .07), 0 1px 3px rgba(20, 33, 61, .04);
+  --e-3: 0 18px 48px rgba(10, 20, 40, .14), 0 2px 8px rgba(10, 20, 40, .06);
+  --shadow-sm: var(--e-1);
+  --shadow-md: var(--e-2);
+  --shadow-lg: var(--e-3);
+
+  /* --- Motion: one curve, three durations --- */
+  --ease: cubic-bezier(.2, .7, .3, 1);
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
+  --dur-1: 130ms;
+  --dur-2: 220ms;
+  --dur-3: 420ms;
+
+  /* --- Type --- */
+  --font: Inter, "Inter var", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  --fs-display: clamp(38px, 5.4vw, 68px);
+  --fs-h1: clamp(26px, 3vw, 34px);
+  --fs-h2: 21px;
+  --fs-h3: 16px;
+  --fs-body: 14px;
+  --fs-small: 12.5px;
+  --fs-micro: 11px;
+  --fs-label: 10.5px;
+  --tracking-tight: -.03em;
+  --tracking-label: .1em;
+
+  --topbar-height: 60px;
+
+  color-scheme: light;
+  font-family: var(--font);
+}
+
+:root[data-theme="dark"] {
+  --bg: #05080f;
+  --surface: #0d1421;
+  --surface-secondary: #111a2b;
+  --surface-sunken: #080d17;
+  --surface-active: rgba(252, 163, 17, .14);
+  --surface-inverse: #f4f6f9;
+
+  --text: #e8edf5;
+  --heading: #ffffff;
+  --text-secondary: #97a5bd;
+  --text-tertiary: #6d7b93;
+  --text-inverse: #0a1428;
+
+  --border: rgba(255, 255, 255, .10);
+  --border-strong: rgba(255, 255, 255, .18);
+  --border-subtle: rgba(255, 255, 255, .06);
+
+  --accent-hover: #ffb63f;
+  --accent-strong: #ffc76a;
+  --accent-text: #14213d;
+  --accent-soft: rgba(252, 163, 17, .15);
+  --accent-softer: rgba(252, 163, 17, .07);
+
+  --danger: #f0757d;
+  --danger-soft: rgba(240, 117, 125, .12);
+  --success: #4fc78f;
+  --success-soft: rgba(79, 199, 143, .12);
+  --warning: #f3c169;
+  --warning-soft: rgba(243, 193, 105, .12);
+  --info: #b3bcca;
+  --info-soft: rgba(255, 255, 255, .06);
+
+  --e-1: 0 1px 2px rgba(0, 0, 0, .35);
+  --e-2: 0 6px 18px rgba(0, 0, 0, .40);
+  --e-3: 0 22px 60px rgba(0, 0, 0, .55);
+
+  color-scheme: dark;
+}
+
+/* ==========================================================================
+   Reset and base
+   ========================================================================== */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+  color: var(--text);
+}
+
+body {
+  font-family: var(--font);
+  font-size: var(--fs-body);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: .42; }
+
+h1, h2, h3, h4 { color: var(--heading); letter-spacing: var(--tracking-tight); line-height: 1.18; }
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
+}
+
+svg {
+  width: 20px; height: 20px;
+  fill: none; stroke: currentColor;
+  stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round;
+  flex: 0 0 auto;
+}
+
+/* Every metric in the product is a number you compare against another number. */
+.tabular, .ds-metric b, .ds-metric strong { font-variant-numeric: tabular-nums; }
+
+/* ==========================================================================
+   Utilities
+   ========================================================================== */
+
+.hidden { display: none !important; }
+.muted { color: var(--text-secondary); }
+.grow { flex: 1; }
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+}
+
+/* The system's one "this is active" marker: a 3px orange bar on the leading edge. */
+.ds-marker { position: relative; }
+.ds-marker::before {
+  content: ""; position: absolute; left: 0; top: 50%;
+  width: 3px; height: 18px; border-radius: 0 2px 2px 0;
+  background: var(--accent); transform: translateY(-50%);
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  color: var(--text-tertiary);
+  font-size: var(--fs-label);
+  font-weight: 750;
+  letter-spacing: var(--tracking-label);
+  text-transform: uppercase;
+}
+
+/* ==========================================================================
+   Buttons — one family, one radius, three sizes.
+   Rectangular with a 10px radius, always. Pills are for badges only.
+   ========================================================================== */
+
+.primary, .secondary, .ghost, .danger, .btn {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px 16px;
+  border-radius: var(--r-sm);
+  font-size: var(--fs-small);
+  font-weight: 700;
+  letter-spacing: -.005em;
+  white-space: nowrap;
+  text-decoration: none;
+  transition:
+    background var(--dur-1) var(--ease),
+    border-color var(--dur-1) var(--ease),
+    color var(--dur-1) var(--ease),
+    box-shadow var(--dur-1) var(--ease),
+    transform var(--dur-1) var(--ease);
+}
+.primary svg, .secondary svg, .ghost svg, .danger svg, .btn svg { width: 17px; height: 17px; }
+
+.primary {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-text);
+  box-shadow: 0 1px 2px rgba(20, 33, 61, .10);
+}
+.primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); box-shadow: 0 4px 14px var(--accent-ring); }
+.primary:active:not(:disabled) { transform: translateY(1px); box-shadow: none; }
+
+.secondary {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--heading);
+  box-shadow: var(--e-1);
+}
+.secondary:hover:not(:disabled) { border-color: var(--border-strong); background: var(--surface-secondary); }
+.secondary:active:not(:disabled) { transform: translateY(1px); box-shadow: none; }
+
+.ghost {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+}
+.ghost:hover:not(:disabled) { background: var(--surface-sunken); color: var(--heading); }
+
+.danger {
+  border: 1px solid var(--danger);
+  background: var(--danger);
+  color: #fff;
+}
+.danger:hover:not(:disabled) { filter: brightness(1.08); }
+
+.btn-sm { min-height: 32px; padding: 6px 11px; font-size: var(--fs-micro); border-radius: var(--r-xs); }
+.btn-lg { min-height: 48px; padding: 13px 22px; font-size: var(--fs-body); }
+.wide { width: 100%; }
+
+.text-button {
+  min-height: 0;
+  padding: 4px 2px;
+  border: 0;
+  background: transparent;
+  color: var(--accent-strong);
+  font-size: var(--fs-small);
+  font-weight: 700;
+}
+.text-button:hover { color: var(--accent-hover); text-decoration: underline; text-underline-offset: 3px; }
+[data-theme="dark"] .text-button { color: var(--accent); }
+.danger-text { color: var(--danger) !important; }
+
+.icon-button {
+  width: 38px; height: 38px;
+  display: inline-grid; place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+}
+.icon-button:hover { background: var(--surface-sunken); color: var(--heading); }
+.icon-button.bordered { border-color: var(--border); background: var(--surface); }
+.icon-button.bordered:hover { border-color: var(--border-strong); }
+
+/* ==========================================================================
+   Badges and chips — the only pill-shaped elements in the system
+   ========================================================================== */
+
+.ds-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: var(--r-pill);
+  background: var(--info-soft);
+  color: var(--text-secondary);
+  font-size: var(--fs-label);
+  font-weight: 750;
+  letter-spacing: .02em;
+  white-space: nowrap;
+}
+.ds-badge::before {
+  content: "";
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: 0 0 auto;
+}
+.ds-badge.plain::before { display: none; }
+.ds-badge.success { background: var(--success-soft); color: var(--success); }
+.ds-badge.danger  { background: var(--danger-soft);  color: var(--danger); }
+.ds-badge.warning { background: var(--warning-soft); color: var(--warning); }
+.ds-badge.accent  { background: var(--accent-soft);  color: var(--accent-strong); }
+[data-theme="dark"] .ds-badge.accent { color: var(--accent); }
+.ds-badge.running::before { animation: ds-pulse 1.6s var(--ease) infinite; }
+
+@keyframes ds-pulse { 50% { opacity: .3; } }
+
+.ds-chip {
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: var(--fs-micro);
+  font-weight: 700;
+  transition: border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.ds-chip:hover { border-color: var(--border-strong); color: var(--heading); }
+.ds-chip.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+[data-theme="dark"] .ds-chip.active { color: var(--accent); }
+
+/* ==========================================================================
+   Cards and panels
+   ========================================================================== */
+
+.ds-card {
+  padding: var(--s-5);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: var(--e-1);
+}
+.ds-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+}
+.ds-inset {
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--r-md);
+  background: var(--surface-secondary);
+}
+
+/* Avatar: square-with-soft-corners, prussian ground, orange initial. */
+.ds-avatar {
+  width: 38px; height: 38px;
+  display: grid; place-items: center;
+  flex: 0 0 auto;
+  border-radius: var(--r-md);
+  background: var(--prussian-blue);
+  color: var(--orange);
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+[data-theme="dark"] .ds-avatar { background: var(--surface-secondary); }
+.ds-avatar.sm { width: 30px; height: 30px; border-radius: var(--r-sm); font-size: 12px; }
+.ds-avatar.lg { width: 46px; height: 46px; border-radius: var(--r-lg); font-size: 17px; }
+
+/* ==========================================================================
+   Form controls — one input look everywhere
+   ========================================================================== */
+
+.ds-field { display: grid; gap: 6px; }
+.ds-label, .ds-field > span:first-child {
+  color: var(--text-secondary);
+  font-size: var(--fs-micro);
+  font-weight: 700;
+}
+
+input[type="text"], input[type="email"], input[type="password"], input[type="search"],
+input[type="number"], input[type="url"], input[type="tel"], select, textarea {
+  min-height: 42px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  outline: 0;
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--fs-body);
+  transition: border-color var(--dur-1) var(--ease), box-shadow var(--dur-1) var(--ease);
+}
+input::placeholder, textarea::placeholder { color: var(--text-tertiary); }
+input:focus, select:focus, textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+input[type="search"]::-webkit-search-decoration,
+input[type="search"]::-webkit-search-cancel-button { -webkit-appearance: none; }
+
+/* Native selects get a real chevron instead of the platform arrow. */
+select {
+  appearance: none;
+  padding-right: 34px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235c6a85' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 16px;
+}
+[data-theme="dark"] select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2397a5bd' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+}
+
+input[type="checkbox"], input[type="radio"] {
+  width: 18px; height: 18px;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+/* ==========================================================================
+   Progress
+   ========================================================================== */
+
+.ds-progress, .progress {
+  height: 6px;
+  overflow: hidden;
+  border-radius: var(--r-pill);
+  background: var(--surface-sunken);
+}
+.ds-progress > *, .progress > i {
+  display: block;
+  width: 0; height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), #ffbe4d);
+  transition: width var(--dur-2) var(--ease);
+}
+
+/* ==========================================================================
+   Dialogs
+   ========================================================================== */
+
+.dialog, .ds-dialog {
+  width: min(660px, calc(100% - 24px));
+  max-height: min(88dvh, 900px);
+  padding: 0;
+  overflow: hidden auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-xl);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--e-3);
+}
+.dialog::backdrop, .ds-dialog::backdrop {
+  background: rgba(10, 20, 40, .55);
+  backdrop-filter: blur(3px);
+}
+dialog[open] { animation: ds-dialog-in var(--dur-2) var(--ease-out); }
+@keyframes ds-dialog-in {
+  from { opacity: 0; transform: translateY(10px) scale(.99); }
+}
+
+/* ==========================================================================
+   Tables
+   ========================================================================== */
+
+.ds-table { width: 100%; border-collapse: collapse; font-size: var(--fs-small); }
+.ds-table th {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-tertiary);
+  font-size: var(--fs-label);
+  font-weight: 750;
+  letter-spacing: var(--tracking-label);
+  text-align: left;
+  text-transform: uppercase;
+}
+.ds-table td { padding: 12px; border-bottom: 1px solid var(--border-subtle); }
+.ds-table tr:last-child td { border-bottom: 0; }
+
+/* ==========================================================================
+   Reduced motion
+   ========================================================================== */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}

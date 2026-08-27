@@ -6,7 +6,15 @@ async function loadWebUsage() {
     const percent = usage.storage_limit ? Math.min(100, usage.storage_used * 100 / usage.storage_limit) : 0;
     const quota = usage.imap_transfer_quota;
     const restoreLimit = quota.limit == null ? 'Illimitati' : `${quota.used} / ${quota.limit}`;
-    document.querySelector('#web-usage').innerHTML = `<div class="usage-plan"><b>${esc(usage.plan)}</b><span>Piano</span></div><div class="usage-storage"><b>${bytes(usage.storage_used)} / ${limit}</b><span>Spazio usato</span>${usage.storage_limit ? `<i><em data-progress="${percent}"></em></i>` : ''}</div><div><b>${usage.mailbox_count} / ${mailLimit}</b><span>Caselle</span></div><div><b>${usage.active_backups}</b><span>Backup attivi</span></div><div><b>${usage.active_transfers}</b><span>Ripristini attivi</span></div><div><b>${restoreLimit}</b><span>Ripristini questo mese</span></div>${usage.over_quota ? '<strong class="over-quota">Spazio esaurito</strong>' : ''}`;
+    const vital = (label, value, extra = '') => `<div class="vital"><span>${label}</span><b>${value}</b>${extra}</div>`;
+    const bar = usage.storage_limit ? `<div class="vital-bar"><i data-progress="${percent}"></i></div>` : '<small class="vital-note">Nessun limite di spazio sul tuo piano</small>';
+    document.querySelector('#web-usage').innerHTML =
+      `<div class="vital vital-lead"><span>Spazio archiviato</span><b>${bytes(usage.storage_used)}<em> / ${limit}</em></b>${bar}</div>`
+      + vital('Caselle', `${usage.mailbox_count}<em> / ${mailLimit}</em>`)
+      + vital('Backup attivi', usage.active_backups)
+      + vital('Ripristini attivi', usage.active_transfers)
+      + vital('Ripristini / mese', restoreLimit)
+      + (usage.over_quota ? '<div class="vital vital-alert"><span>Attenzione</span><b>Spazio esaurito</b></div>' : '');
     applyProgressWidths(document.querySelector('#web-usage'));
   } catch (_) { console.warn('Utilizzo non disponibile'); }
 }
