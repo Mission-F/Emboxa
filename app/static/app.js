@@ -24,6 +24,11 @@ const iconPaths = {
   download: '<path d="M12 3v12m0 0 4-4m-4 4-4-4M5 19h14"/>'
 };
 const icon = (name, className = '') => `<svg class="${className}" viewBox="0 0 24 24" aria-hidden="true">${iconPaths[name]}</svg>`;
+/* Every user-facing string in this file goes through t(); preferences.locale (set further down,
+   before any of this is ever called) decides it/en. */
+const t = (key) => (window.EMBOXA_I18N ? EMBOXA_I18N.t(key, preferences.locale) : key);
+const uiLocale = () => (window.EMBOXA_I18N ? EMBOXA_I18N.resolve(preferences.locale) : 'it') === 'it' ? 'it-IT' : 'en-US';
+const numberFmt = (value) => Number(value).toLocaleString(uiLocale());
 
 // The app CSP forbids inline style attributes, so bar widths are applied through the CSSOM.
 function applyProgressWidths(root) {
@@ -36,10 +41,10 @@ async function api(url, options = {}) {
   if (options.body && !(options.body instanceof FormData)) headers.set('Content-Type', 'application/json');
   if (options.method && options.method !== 'GET') headers.set('X-CSRF-Token', csrf);
   const response = await fetch(url, {...options, headers});
-  if (response.status === 401) { location.href = '/login'; throw new Error('Sessione scaduta'); }
+  if (response.status === 401) { location.href = '/login'; throw new Error(t('sessionExpired')); }
   const type = response.headers.get('content-type') || '';
   const result = type.includes('json') ? await response.json() : null;
-  if (!response.ok) throw new Error(result?.detail || `Errore ${response.status}`);
+  if (!response.ok) throw new Error(result?.detail || `${t('errorPrefix')} ${response.status}`);
   return result;
 }
 
@@ -84,7 +89,7 @@ function toast(message, kind = '') {
   clearTimeout(el._timer); el._timer = setTimeout(() => { el.className = 'toast'; }, 3500);
 }
 function bytes(value = 0) { const units=['B','KB','MB','GB','TB']; let i=0,n=Number(value); while(n>=1024&&i<4){n/=1024;i++;} return `${n.toFixed(i ? 1 : 0)} ${units[i]}`; }
-function date(value) { return value ? new Intl.DateTimeFormat('it-IT',{dateStyle:'medium',timeStyle:'short'}).format(new Date(value)) : 'Mai'; }
+function date(value) { return value ? new Intl.DateTimeFormat(uiLocale(),{dateStyle:'medium',timeStyle:'short'}).format(new Date(value)) : t('never'); }
 /* Maps a backup status onto the design system's badge tones, so status reads as a colour
    before it reads as a word. */
 /* "Name <addr@host>" -> "Name"; a bare address keeps its local part. Mailbox rows read as people,
@@ -106,9 +111,9 @@ function senderName(value) {
 function senderInitial(value) { const name = senderName(value); return (name.match(/[\p{L}\p{N}]/u) || ['?'])[0].toUpperCase(); }
 
 function statusTone(value) { return ({completed:'success',imported:'success',running:'accent running',failed:'danger',cancelled:'warning',cleared:'warning',disconnected:'danger'})[value] || ''; }
-function statusLabel(value) { return ({never:'Mai eseguito',running:'Backup in corso',completed:'Backup completato',failed:'Backup non riuscito',cancelled:'Backup interrotto',imported:'Archivio importato',cleared:'Archivio cancellato',disconnected:'Account scollegato'})[value] || value; }
-function duration(seconds) { if (seconds == null) return 'Stima in corso…'; const n=Math.max(0,Number(seconds)); if(n<60)return `~${Math.max(1,Math.round(n/5)*5)} sec`;if(n<3600)return `~${Math.round(n/60)} min`;const h=Math.floor(n/3600),m=Math.round((n%3600)/300)*5;return `~${h} h${m?` ${m} min`:''}`; }
-function emptyReader() { return `<div class="reader-empty"><span>${icon('mail')}</span><p>Seleziona un messaggio per leggerlo</p></div>`; }
+function statusLabel(value) { return ({never:t('statusNever'),running:t('statusRunning'),completed:t('statusCompleted'),failed:t('statusFailed'),cancelled:t('statusCancelled'),imported:t('statusImported'),cleared:t('statusCleared'),disconnected:t('statusDisconnected')})[value] || value; }
+function duration(seconds) { if (seconds == null) return t('estimating'); const n=Math.max(0,Number(seconds)); if(n<60)return `~${Math.max(1,Math.round(n/5)*5)} sec`;if(n<3600)return `~${Math.round(n/60)} min`;const h=Math.floor(n/3600),m=Math.round((n%3600)/300)*5;return `~${h} h${m?` ${m} min`:''}`; }
+function emptyReader() { return `<div class="reader-empty"><span>${icon('mail')}</span><p>${t('selectMessage')}</p></div>`; }
 function skeleton(count = 6) { return `<div class="skeleton-list">${Array.from({length: count}, () => '<div class="skeleton-row"></div>').join('')}</div>`; }
 
 async function loadAccounts(quiet = false) {
@@ -118,8 +123,8 @@ async function loadAccounts(quiet = false) {
     if (quiet) {
       for (const account of state.accounts) {
         const old = previous.get(account.id);
-        if (old?.job && !account.job && account.last_backup_status === 'completed') toast(`Backup completato · ${account.message_count.toLocaleString('it-IT')} messaggi`);
-        if (old?.job && !account.job && account.last_backup_status === 'failed') toast('Backup non riuscito', 'error');
+        if (old?.job && !account.job && account.last_backup_status === 'completed') toast(`${t('toastBackupCompleted')} · ${numberFmt(account.message_count)} ${t('messagesUnit')}`);
+        if (old?.job && !account.job && account.last_backup_status === 'failed') toast(t('toastBackupFailed'), 'error');
       }
     }
     renderAccounts();
@@ -131,15 +136,15 @@ function accountCard(account) {
   const job = account.job;
   const microsoft = account.auth_provider === 'microsoft';
   const mbox = account.auth_provider === 'mbox';
-  const progress = job ? `<div class="job"><div><span>${esc(job.current_folder || statusLabel(job.status))}</span><strong>${job.status==='queued'?'In coda':`${job.percent}%`}</strong></div><div class="progress"><i data-progress="${job.percent}"></i></div><small>${job.processed_messages.toLocaleString('it-IT')} / ${job.total_messages ? job.total_messages.toLocaleString('it-IT') : '?'} messaggi · ${job.attachment_count.toLocaleString('it-IT')} allegati${job.status==='running'?` · ${job.throughput.toFixed(1)} msg/s · ETA ${duration(job.eta_seconds)}`:''}</small><button data-action="cancel" data-id="${job.id}" class="text-button danger-text">Interrompi</button></div>` : '';
+  const progress = job ? `<div class="job"><div><span>${esc(job.current_folder || statusLabel(job.status))}</span><strong>${job.status==='queued'?t('inQueue'):`${job.percent}%`}</strong></div><div class="progress"><i data-progress="${job.percent}"></i></div><small>${numberFmt(job.processed_messages)} / ${job.total_messages ? numberFmt(job.total_messages) : '?'} ${t('messagesUnit')} · ${numberFmt(job.attachment_count)} ${t('attachmentsUnit')}${job.status==='running'?` · ${job.throughput.toFixed(1)} msg/s · ETA ${duration(job.eta_seconds)}`:''}</small><button data-action="cancel" data-id="${job.id}" class="text-button danger-text">${t('interrupt')}</button></div>` : '';
   return `<article class="account-card" data-account-card="${account.id}">
       <div class="card-top"><div class="ds-avatar lg account-avatar">${microsoft?'M':mbox?'B':esc(account.display_name.charAt(0).toUpperCase())}</div><div class="account-title"><h2>${esc(account.display_name)}</h2><p>${esc(account.email)}</p></div>
-      <details class="menu" data-account-menu="${account.id}" ${state.openAccountMenuId===account.id?'open':''}><summary aria-label="Azioni account ${esc(account.display_name)}" aria-haspopup="menu" aria-expanded="${state.openAccountMenuId===account.id?'true':'false'}">${icon('dots')}</summary><div role="menu">${microsoft||mbox?'':`<button role="menuitem" data-action="edit" data-id="${account.id}">Modifica IMAP</button>`}<button role="menuitem" data-action="retention" data-id="${account.id}">Versioni da tenere</button>${account.imap_enabled?`<button role="menuitem" data-action="test-saved" data-id="${account.id}">Test connessione</button>`:''}${microsoft?`<button role="menuitem" data-action="disconnect-microsoft" data-id="${account.id}" class="danger-text">Scollega Microsoft</button>`:''}${!account.is_permanent?`<button role="menuitem" data-action="permanent" data-id="${account.id}">Rendi permanente</button>`:'<span class="permanent-label">Permanente</span>'}${account.has_archive?`<button role="menuitem" data-action="export" data-id="${account.id}">Esporta archivio</button><button role="menuitem" data-action="export-local" data-id="${account.id}">Esporta su NAS</button><button role="menuitem" data-action="clear" data-id="${account.id}" class="danger-text">Cancella archivio</button>`:''}<button role="menuitem" data-action="delete" data-id="${account.id}" class="danger-text">Elimina account</button></div></details></div>
-      <div class="card-tags"><span class="ds-badge plain ${microsoft?'accent':''}">${microsoft?'Microsoft':mbox?'MBOX offline':'IMAP'}</span>${account.is_permanent?'<span class="ds-badge plain accent">Permanente</span>':''}${account.imap_enabled?'':'<span class="ds-badge plain">Solo lettura</span>'}</div>
-      <div class="card-stats"><div><strong>${account.message_count.toLocaleString('it-IT')}</strong><span>messaggi</span></div><div><strong>${bytes(account.archive_size)}</strong><span>archivio</span></div></div>
-      <div class="last-backup"><span class="ds-badge ${statusTone(account.last_backup_status)}">${esc(statusLabel(account.last_backup_status))}</span><small>${account.last_backup_at ? date(account.last_backup_at) : 'Mai eseguito'}${account.next_backup_at ? ` · prossimo ${date(account.next_backup_at)}` : ''}</small></div>
+      <details class="menu" data-account-menu="${account.id}" ${state.openAccountMenuId===account.id?'open':''}><summary aria-label="${t('accountActionsAria')} ${esc(account.display_name)}" aria-haspopup="menu" aria-expanded="${state.openAccountMenuId===account.id?'true':'false'}">${icon('dots')}</summary><div role="menu">${microsoft||mbox?'':`<button role="menuitem" data-action="edit" data-id="${account.id}">${t('editImap')}</button>`}<button role="menuitem" data-action="retention" data-id="${account.id}">${t('retentionVersionsAction')}</button>${account.imap_enabled?`<button role="menuitem" data-action="test-saved" data-id="${account.id}">${t('testConnection')}</button>`:''}${microsoft?`<button role="menuitem" data-action="disconnect-microsoft" data-id="${account.id}" class="danger-text">${t('disconnectMicrosoft')}</button>`:''}${!account.is_permanent?`<button role="menuitem" data-action="permanent" data-id="${account.id}">${t('makePermanent')}</button>`:`<span class="permanent-label">${t('permanentLabel')}</span>`}${account.has_archive?`<button role="menuitem" data-action="export" data-id="${account.id}">${t('exportArchiveAction')}</button><button role="menuitem" data-action="export-local" data-id="${account.id}">${t('exportToNas')}</button><button role="menuitem" data-action="clear" data-id="${account.id}" class="danger-text">${t('clearArchive')}</button>`:''}<button role="menuitem" data-action="delete" data-id="${account.id}" class="danger-text">${t('deleteAccount')}</button></div></details></div>
+      <div class="card-tags"><span class="ds-badge plain ${microsoft?'accent':''}">${microsoft?t('providerMicrosoft'):mbox?t('providerMboxOffline'):t('providerImap')}</span>${account.is_permanent?`<span class="ds-badge plain accent">${t('permanentLabel')}</span>`:''}${account.imap_enabled?'':`<span class="ds-badge plain">${t('readOnly')}</span>`}</div>
+      <div class="card-stats"><div><strong>${numberFmt(account.message_count)}</strong><span>${t('messagesUnit')}</span></div><div><strong>${bytes(account.archive_size)}</strong><span>${t('archiveUnit')}</span></div></div>
+      <div class="last-backup"><span class="ds-badge ${statusTone(account.last_backup_status)}">${esc(statusLabel(account.last_backup_status))}</span><small>${account.last_backup_at ? date(account.last_backup_at) : t('neverRun')}${account.next_backup_at ? ` · ${t('prossimoPrefix')} ${date(account.next_backup_at)}` : ''}</small></div>
       ${account.last_backup_error ? `<p class="card-error" title="${esc(account.last_backup_error)}">${esc(account.last_backup_error)}</p>` : ''}${progress}
-      <div class="card-actions"><button data-action="open" data-id="${account.id}" class="primary" ${!account.has_archive?'disabled':''}>Apri archivio</button><button data-action="backup" data-id="${account.id}" class="secondary" ${!account.imap_enabled||job?'disabled':''}>${job?'Backup in corso':'Backup ora'}</button>${account.has_archive?`<button data-action="transfer" data-id="${account.id}" class="secondary icon-only" title="Ripristina in una casella" aria-label="Ripristina in una casella">${icon('transfer')}</button>`:''}</div>
+      <div class="card-actions"><button data-action="open" data-id="${account.id}" class="primary" ${!account.has_archive?'disabled':''}>${t('openArchive')}</button><button data-action="backup" data-id="${account.id}" class="secondary" ${!account.imap_enabled||job?'disabled':''}>${job?t('backupRunning'):t('backupNow')}</button>${account.has_archive?`<button data-action="transfer" data-id="${account.id}" class="secondary icon-only" title="${t('restoreToMailboxAction')}" aria-label="${t('restoreToMailboxAction')}">${icon('transfer')}</button>`:''}</div>
     </article>`;
 }
 
@@ -197,8 +202,8 @@ function syncProviderMode() {
   $('#microsoft-oauth-box')?.classList.toggle('hidden', !microsoft);
   $('#microsoft-manual')?.classList.toggle('active', microsoftManual);
   if ($('#microsoft-manual')) $('#microsoft-manual').textContent = microsoftManual
-    ? 'Torna al collegamento con Microsoft'
-    : 'Avanzate: configura manualmente con IMAP';
+    ? t('backToMicrosoftConnect')
+    : t('advancedManualImap');
   $$('.imap-field').forEach(node => {
     node.classList.toggle('hidden', oauthOnly);
     $$('input,select,textarea', node).forEach(field => {
@@ -213,14 +218,14 @@ function syncProviderMode() {
   if (microsoft && status) {
     status.className = 'form-status';
     status.textContent = oauthOnly
-      ? 'Consigliato: collega con Microsoft, nessuna password viene salvata in EMBOXA.'
-      : 'Modalità avanzata: inserisci server IMAP e app password Microsoft.';
+      ? t('microsoftRecommendedStatus')
+      : t('microsoftAdvancedStatus');
   }
   if (microsoft) checkMicrosoftOAuth().then(configured => {
     // Without OAuth credentials the button would only produce an error: steer to IMAP instead.
     $('#microsoft-connect').disabled = !configured;
     if (!configured && !microsoftManual) { microsoftManual = true; syncProviderMode(); }
-    if (!configured && status) status.textContent = 'Microsoft OAuth non è configurato su questo server: usa la configurazione IMAP manuale.';
+    if (!configured && status) status.textContent = t('microsoftOauthUnavailable');
   });
 }
 
@@ -235,8 +240,8 @@ function accountPayload(form) {
 }
 function openAccountDialog(account = null) {
   const form = $('#account-form'); form.reset(); form.account_id.value = account?.id || '';
-  $('#account-dialog-title').textContent = account ? 'Modifica account' : 'Aggiungi account';
-  $('#password-hint').textContent = account ? 'Lascia vuoto per mantenere la password salvata.' : 'Obbligatoria per un nuovo account.';
+  $('#account-dialog-title').textContent = account ? t('editAccountTitle') : t('addAccount');
+  $('#password-hint').textContent = account ? t('passwordHintOptional') : t('passwordHintRequired');
   if (account) for (const [key,value] of Object.entries(account)) if (form.elements[key] && value !== null) form.elements[key].value = value;
   else { form.imap_port.value = 993; form.security.value = 'ssl'; }
   $('.advanced-settings').open = Boolean(account?.root_folder || (account?.schedule_mode && account.schedule_mode !== 'disabled'));
@@ -278,37 +283,37 @@ async function waitForExportJob(job) {
   let current = job, visualPercent = Number(job.percent || 5);
   while (current.status === 'queued' || current.status === 'running') {
     visualPercent = Math.min(99, Math.max(visualPercent + 1, Number(current.percent || 0)));
-    exportProgress(current.status === 'queued' ? 'Export in coda…' : 'Export in background…', visualPercent, current.detail || 'Il server sta preparando il file senza tenere aperta la richiesta Cloudflare.');
+    exportProgress(current.status === 'queued' ? t('exportQueuedNote') : t('exportBackgroundNote'), visualPercent, current.detail || t('serverPreparingFile'));
     await wait(1500);
     current = await api(current.status_url);
   }
-  if (current.status === 'failed') throw new Error(current.error || current.detail || 'Export non riuscito');
-  if (!current.export?.download_url) throw new Error('Export completato ma download non disponibile');
+  if (current.status === 'failed') throw new Error(current.error || current.detail || t('exportFailedGeneric'));
+  if (!current.export?.download_url) throw new Error(t('exportDownloadUnavailable'));
   return current.export;
 }
 async function exportArchive(accountId) {
   const dialog = $('#export-dialog');
   $('#export-close').disabled = true; $('#export-done').disabled = true;
   $$('[data-export-step]').forEach(node => node.classList.remove('active', 'done'));
-  $('#export-summary').textContent = 'Creo un pacchetto .mailvault in background.';
-  exportStep('prepare'); exportProgress('Avvio export asincrono…', 5, 'La richiesta torna subito: niente più timeout 524 durante la creazione.');
+  $('#export-summary').textContent = t('creatingPackageBackground');
+  exportStep('prepare'); exportProgress(t('startingAsyncExport'), 5, t('asyncExportNote'));
   dialog.showModal();
   try {
     const job = await api(`/api/accounts/${accountId}/export`, {method:'POST'});
     const info = await waitForExportJob(job);
     exportStep('prepare', 'done');
     $('#export-summary').textContent = `${info.filename} · ${bytes(info.size)}`;
-    exportProgress('Export locale pronto', 72, info.persistent ? 'Conservazione server: senza scadenza.' : `Conservazione server fino a ${date(info.expires_at)}.`);
+    exportProgress(t('localExportReady'), 72, info.persistent ? t('retentionNoExpiry') : `${t('retentionUntil')} ${date(info.expires_at)}.`);
     exportStep('browser');
     exportStep('browser', 'done');
     exportStep('save');
-    exportProgress('Download avviato dal browser…', 96, 'Il file viene scaricato direttamente dal browser, senza caricarlo tutto in memoria.');
+    exportProgress(t('downloadStartedBrowser'), 96, t('browserDownloadNote'));
     triggerBrowserDownload(info.download_url, info.filename);
     exportStep('save', 'done');
-    exportProgress('Export completato', 100, 'Download avviato. Il file .mailvault resta nella cartella download scelta dal browser.');
-    toast('Export completato');
+    exportProgress(t('exportCompleted'), 100, t('exportCompletedNote'));
+    toast(t('toastExportCompleted'));
   } catch (error) {
-    exportProgress('Export non completato', 0, error.message);
+    exportProgress(t('exportNotCompleted'), 0, error.message);
     toast(error.message, 'error');
   } finally {
     $('#export-close').disabled = false; $('#export-done').disabled = false;
@@ -318,23 +323,23 @@ async function exportArchiveToNas(accountId) {
   const dialog = $('#export-dialog');
   $('#export-close').disabled = true; $('#export-done').disabled = true;
   $$('[data-export-step]').forEach(node => node.classList.remove('active', 'done'));
-  $('#export-summary').textContent = 'Salvo il pacchetto .mailvault nella cartella export locale della NAS.';
-  exportStep('prepare'); exportProgress('Avvio export su NAS…', 5, 'Il file verrà copiato nella cartella preimpostata sul volume dati.');
+  $('#export-summary').textContent = t('savingNasPackage');
+  exportStep('prepare'); exportProgress(t('startingNasExport'), 5, t('nasExportNote'));
   dialog.showModal();
   try {
     const job = await api(`/api/accounts/${accountId}/export/local`, {method:'POST'});
     let current = job;
     while (current.status === 'queued' || current.status === 'running') {
-      exportProgress(current.status === 'queued' ? 'Export su NAS in coda…' : 'Export su NAS…', current.percent || 5, current.detail || 'Preparazione file.');
+      exportProgress(current.status === 'queued' ? t('nasExportQueued') : t('nasExportRunning'), current.percent || 5, current.detail || t('preparingFile'));
       await wait(1500);
       current = await api(current.status_url);
     }
-    if (current.status === 'failed') throw new Error(current.error || current.detail || 'Export non riuscito');
+    if (current.status === 'failed') throw new Error(current.error || current.detail || t('exportFailedGeneric'));
     exportStep('prepare', 'done'); exportStep('browser', 'done'); exportStep('save', 'done');
-    exportProgress('Export su NAS completato', 100, current.local_path ? `File salvato: ${current.local_path}` : 'File salvato nella cartella export locale.');
-    toast('Export salvato su NAS');
+    exportProgress(t('nasExportCompleted'), 100, current.local_path ? `${t('fileSavedAt')} ${current.local_path}` : t('fileSavedFolder'));
+    toast(t('toastExportSavedNas'));
   } catch (error) {
-    exportProgress('Export non completato', 0, error.message);
+    exportProgress(t('exportNotCompleted'), 0, error.message);
     toast(error.message, 'error');
   } finally {
     $('#export-close').disabled = false; $('#export-done').disabled = false;
@@ -350,25 +355,25 @@ document.addEventListener('click', async event => {
   const id = Number(button.dataset.id); const account = state.accounts.find(item => item.id === id);
   try {
     if (button.dataset.action === 'edit') openAccountDialog(account);
-    if (button.dataset.action === 'backup') { const result=await api(`/api/accounts/${id}/backup`, {method:'POST'}); toast(result.created?'Backup aggiunto alla coda':'Backup già in coda'); loadAccounts(true); }
+    if (button.dataset.action === 'backup') { const result=await api(`/api/accounts/${id}/backup`, {method:'POST'}); toast(result.created?t('toastQueued'):t('toastAlreadyQueued')); loadAccounts(true); }
     if (button.dataset.action === 'retention') {
-      const raw = prompt('Quante versioni backup vuoi tenere per questa casella?', account.retention_versions || 3);
+      const raw = prompt(t('retentionPrompt'), account.retention_versions || 3);
       if (raw === null) return;
       const retention = Number(raw);
-      if (!Number.isInteger(retention) || retention < 1 || retention > 100) throw new Error('Inserisci un numero tra 1 e 100');
+      if (!Number.isInteger(retention) || retention < 1 || retention > 100) throw new Error(t('retentionRangeError'));
       await api(`/api/accounts/${id}/settings`, {method:'PATCH', body:JSON.stringify({retention_versions:retention})});
-      toast('Numero versioni aggiornato'); loadAccounts();
+      toast(t('toastRetentionUpdated')); loadAccounts();
     }
-    if (button.dataset.action === 'cancel' && await confirmAction('Interrompere il backup?', 'Lo staging incompleto sarà eliminato. Il backup precedente resterà disponibile.')) { await api(`/api/jobs/${id}/cancel`, {method:'POST'}); toast('Interruzione richiesta'); }
-    if (button.dataset.action === 'test-saved') { button.disabled=true; const result=await api(`/api/accounts/${id}/test`,{method:'POST'}); toast(`Connessione riuscita · ${result.folders} cartelle`); button.disabled=false; }
-    if (button.dataset.action === 'disconnect-microsoft' && await confirmAction('Scollegare Microsoft?', 'I backup futuri si fermeranno finché non ricolleghi l’account con OAuth. Gli archivi già creati restano disponibili.')) { await api(`/api/accounts/${id}/microsoft`,{method:'DELETE'}); toast('Microsoft scollegato'); loadAccounts(); }
+    if (button.dataset.action === 'cancel' && await confirmAction(t('confirmCancelBackupTitle'), t('confirmCancelBackupCopy'))) { await api(`/api/jobs/${id}/cancel`, {method:'POST'}); toast(t('toastInterruptRequested')); }
+    if (button.dataset.action === 'test-saved') { button.disabled=true; const result=await api(`/api/accounts/${id}/test`,{method:'POST'}); toast(`${t('toastConnectionOk')} · ${result.folders} ${t('folderPlural')}`); button.disabled=false; }
+    if (button.dataset.action === 'disconnect-microsoft' && await confirmAction(t('confirmDisconnectMicrosoftTitle'), t('confirmDisconnectMicrosoftCopy'))) { await api(`/api/accounts/${id}/microsoft`,{method:'DELETE'}); toast(t('toastMicrosoftDisconnected')); loadAccounts(); }
     if (button.dataset.action === 'open') await openArchive(account);
     if (button.dataset.action === 'transfer') await openTransfer(id);
     if (button.dataset.action === 'export') await exportArchive(id);
     if (button.dataset.action === 'export-local') await exportArchiveToNas(id);
-    if (button.dataset.action === 'permanent' && await confirmAction('Rendere permanente questa casella?', 'Con il piano Standard la casella permanente può essere cambiata solo dopo il blocco di 31 giorni.')) { await api(`/api/accounts/${id}/permanent`,{method:'POST'});toast('Casella permanente aggiornata');loadAccounts(); }
-    if (button.dataset.action === 'clear' && await confirmAction('Cancellare l’archivio locale?', 'La configurazione IMAP resterà salvata, ma EML e allegati locali saranno rimossi.')) { await api(`/api/accounts/${id}/archive`,{method:'DELETE'}); toast('Archivio cancellato'); loadAccounts(); }
-    if (button.dataset.action === 'delete' && await confirmAction('Eliminare account e archivio?', 'Questa operazione elimina configurazione, EML e allegati locali. Non modifica il server email.')) { await api(`/api/accounts/${id}`,{method:'DELETE'}); toast('Account eliminato'); loadAccounts(); }
+    if (button.dataset.action === 'permanent' && await confirmAction(t('confirmPermanentTitle'), t('confirmPermanentCopy'))) { await api(`/api/accounts/${id}/permanent`,{method:'POST'});toast(t('toastPermanentUpdated'));loadAccounts(); }
+    if (button.dataset.action === 'clear' && await confirmAction(t('confirmClearArchiveTitle'), t('confirmClearArchiveCopy'))) { await api(`/api/accounts/${id}/archive`,{method:'DELETE'}); toast(t('toastArchiveCleared')); loadAccounts(); }
+    if (button.dataset.action === 'delete' && await confirmAction(t('confirmDeleteAccountTitle'), t('confirmDeleteAccountCopy'))) { await api(`/api/accounts/${id}`,{method:'DELETE'}); toast(t('toastAccountDeleted')); loadAccounts(); }
   } catch (error) { button.disabled=false; toast(error.message,'error'); }
 });
 
@@ -377,22 +382,22 @@ $('#account-form').addEventListener('submit', async event => {
   const form=event.currentTarget, id=form.account_id.value, status=$('#account-form-status');
   if ($('#provider-preset')?.value === 'outlook' && !microsoftManual) {
     status.className = 'form-status';
-    status.textContent = 'Usa "Collega con Microsoft", oppure apri le impostazioni avanzate per configurare IMAP.';
+    status.textContent = t('microsoftUseButtonHint');
     return;
   }
-  status.className='form-status'; status.textContent='Salvataggio in corso…';
-  try { await api(id?`/api/accounts/${id}`:'/api/accounts',{method:id?'PUT':'POST',body:JSON.stringify(accountPayload(form))}); $('#account-dialog').close(); toast('Account salvato'); loadAccounts(); }
+  status.className='form-status'; status.textContent=t('savingInProgress');
+  try { await api(id?`/api/accounts/${id}`:'/api/accounts',{method:id?'PUT':'POST',body:JSON.stringify(accountPayload(form))}); $('#account-dialog').close(); toast(t('toastAccountSaved')); loadAccounts(); }
   catch(error){status.textContent=error.message;status.className='form-status error';}
 });
 $('#test-connection').addEventListener('click', async () => {
   const form=$('#account-form'), status=$('#account-form-status'), id=form.account_id.value, payload=accountPayload(form);
-  status.className='form-status'; status.textContent='Verifica della connessione…';
+  status.className='form-status'; status.textContent=t('verifyingConnection');
   try {
     let result;
     if (!payload.password && id) result=await api(`/api/accounts/${id}/test`,{method:'POST'});
     else result=await api('/api/accounts/test',{method:'POST',body:JSON.stringify({imap_host:payload.imap_host,imap_port:payload.imap_port,security:payload.security,imap_username:payload.imap_username,password:payload.password})});
-    status.textContent=`Connessione riuscita · ${result.folders} cartelle trovate`; status.className='form-status success';
-  } catch(error){status.textContent=`Connessione non riuscita. ${error.message}`;status.className='form-status error';}
+    status.textContent=`${t('toastConnectionOk')} · ${result.folders} ${t('connectionOkFolders')}`; status.className='form-status success';
+  } catch(error){status.textContent=`${t('connectionFailed')} ${error.message}`;status.className='form-status error';}
 });
 $('#provider-preset').addEventListener('change', event => {
   microsoftManual = false;
@@ -420,25 +425,25 @@ async function openArchive(account) {
 }
 function snapshotParam(){return new URLSearchParams({snapshot_id:state.snapshotId}).toString();}
 function renderVersions(){
-  $('#version-select').innerHTML=state.versions.map(version=>`<option value="${version.id}" ${version.id===state.snapshotId?'selected':''}>${date(version.completed_at)}${version.current?' · Current':''}${version.protected?' · Protected':''}</option>`).join('');
+  $('#version-select').innerHTML=state.versions.map(version=>`<option value="${version.id}" ${version.id===state.snapshotId?'selected':''}>${date(version.completed_at)}${version.current?t('currentSuffix'):''}${version.protected?t('protectedSuffix'):''}</option>`).join('');
   const current=state.versions.find(version=>version.id===state.snapshotId),comparison=current?.comparison;
   $('#protection-warning').classList.toggle('hidden',!comparison?.suspicious);
-  if(comparison?.suspicious)$('#protection-warning').innerHTML=`<strong>Riduzione anomala rilevata</strong><span>${comparison.messages_removed.toLocaleString('it-IT')} messaggi in meno. La versione precedente è protetta.</span>`;
-  $('#versions-content').innerHTML=state.versions.map(version=>`<article class="version-row ${version.current?'current':''}"><div><strong>${date(version.completed_at)}</strong><span>${version.message_count.toLocaleString('it-IT')} messaggi · ${bytes(version.archive_size)} · ${version.attachment_count} allegati</span></div><div class="version-badges">${version.current?'<b>Current</b>':''}${version.protected?'<b class="protected">Protected</b>':''}</div>${version.protection_reason?`<p>${esc(version.protection_reason)}</p><div class="version-actions"><button data-protection="keep" data-id="${version.id}" class="secondary">Keep both</button><button data-protection="replace" data-id="${version.id}" class="danger">Replace old backup</button></div>`:''}${version.comparison?.suspicious?`<dl><div><dt>Messaggi rimossi</dt><dd>−${version.comparison.messages_removed.toLocaleString('it-IT')}</dd></div><div><dt>Cartelle rimosse</dt><dd>${version.comparison.folders_removed.length}</dd></div><div><dt>Allegati</dt><dd>${version.comparison.attachments_difference}</dd></div><div><dt>Dimensione</dt><dd>${bytes(Math.abs(version.comparison.size_difference))}${version.comparison.size_difference<0?' in meno':' in più'}</dd></div></dl>`:''}</article>`).join('');
+  if(comparison?.suspicious)$('#protection-warning').innerHTML=`<strong>${t('anomalyDetected')}</strong><span>${numberFmt(comparison.messages_removed)} ${t('anomalyDetail')}</span>`;
+  $('#versions-content').innerHTML=state.versions.map(version=>`<article class="version-row ${version.current?'current':''}"><div><strong>${date(version.completed_at)}</strong><span>${numberFmt(version.message_count)} ${t('messagesUnit')} · ${bytes(version.archive_size)} · ${version.attachment_count} ${t('attachmentsUnit')}</span></div><div class="version-badges">${version.current?`<b>${t('currentBadge')}</b>`:''}${version.protected?`<b class="protected">${t('protectedBadge')}</b>`:''}</div>${version.protection_reason?`<p>${esc(version.protection_reason)}</p><div class="version-actions"><button data-protection="keep" data-id="${version.id}" class="secondary">${t('keepBoth')}</button><button data-protection="replace" data-id="${version.id}" class="danger">${t('replaceOldBackup')}</button></div>`:''}${version.comparison?.suspicious?`<dl><div><dt>${t('removedMessages')}</dt><dd>−${numberFmt(version.comparison.messages_removed)}</dd></div><div><dt>${t('removedFolders')}</dt><dd>${version.comparison.folders_removed.length}</dd></div><div><dt>${t('attachmentsHeading')}</dt><dd>${version.comparison.attachments_difference}</dd></div><div><dt>${t('sizeLabel')}</dt><dd>${bytes(Math.abs(version.comparison.size_difference))}${version.comparison.size_difference<0?t('lessSuffix'):t('moreSuffix')}</dd></div></dl>`:''}</article>`).join('');
 }
 function renderFolders(){
-  $('#folder-list').innerHTML=`<button class="folder-item ${!state.trash&&state.folderId===null?'active':''}" data-folder="">${icon('mail')}<b>Tutti i messaggi</b><em>${state.account.message_count.toLocaleString('it-IT')}</em></button>`+state.folders.map(folder=>`<button class="folder-item depth-${folderDepth(folder.name)} ${!state.trash&&state.folderId===folder.id?'active':''}" data-folder="${folder.id}" title="${esc(folder.name)}">${icon(folderIcon(folder))}<b>${esc(folderLeaf(folder.name))}</b><em>${folder.message_count.toLocaleString('it-IT')}</em></button>`).join('')+`<button class="folder-item ${state.trash?'active':''}" data-folder="trash">${icon('trash')}<b>Cestino archivio</b><em>${state.deletedCount.toLocaleString('it-IT')}</em></button>`;
+  $('#folder-list').innerHTML=`<button class="folder-item ${!state.trash&&state.folderId===null?'active':''}" data-folder="">${icon('mail')}<b>${t('allMessages')}</b><em>${numberFmt(state.account.message_count)}</em></button>`+state.folders.map(folder=>`<button class="folder-item depth-${folderDepth(folder.name)} ${!state.trash&&state.folderId===folder.id?'active':''}" data-folder="${folder.id}" title="${esc(folder.name)}">${icon(folderIcon(folder))}<b>${esc(folderLeaf(folder.name))}</b><em>${numberFmt(folder.message_count)}</em></button>`).join('')+`<button class="folder-item ${state.trash?'active':''}" data-folder="trash">${icon('trash')}<b>${t('trashFolder')}</b><em>${numberFmt(state.deletedCount)}</em></button>`;
 }
 $('#folder-list').addEventListener('click',event=>{const button=event.target.closest('[data-folder]');if(!button)return;state.trash=button.dataset.folder==='trash';state.folderId=!state.trash&&button.dataset.folder?Number(button.dataset.folder):null;state.page=1;renderFolders();showArchiveView('messages');loadMessages();$('#folder-sidebar').classList.remove('open');});
-async function loadStats(){try{const stats=await api(`/api/accounts/${state.account.id}/stats?${snapshotParam()}`);state.deletedCount=stats.deleted||0;$('#archive-stats').innerHTML=`<span>${stats.folders} ${stats.folders===1?'cartella':'cartelle'}</span><span>${stats.attachments} ${stats.attachments===1?'allegato':'allegati'}</span><span>${bytes(stats.archive_size)}</span>`;renderFolders();}catch(error){toast(error.message,'error');}}
+async function loadStats(){try{const stats=await api(`/api/accounts/${state.account.id}/stats?${snapshotParam()}`);state.deletedCount=stats.deleted||0;$('#archive-stats').innerHTML=`<span>${stats.folders} ${stats.folders===1?t('folderSingular'):t('folderPlural')}</span><span>${stats.attachments} ${stats.attachments===1?t('attachmentSingular'):t('attachmentPlural')}</span><span>${bytes(stats.archive_size)}</span>`;renderFolders();}catch(error){toast(error.message,'error');}}
 function queryString(){const params=new URLSearchParams({page:state.page,page_size:state.pageSize,snapshot_id:state.snapshotId,trash:state.trash,...state.filters});if(state.folderId)params.set('folder_id',state.folderId);const search=$('#search-input').value.trim();if(search)params.set('q',search);return params;}
 async function loadMessages(){
   $('#message-list').innerHTML=skeleton();
   try {
     const data=await api(`/api/accounts/${state.account.id}/messages?${queryString()}`); state.total=data.total;
-    $('#result-count').textContent=`${data.total.toLocaleString('it-IT')} risultati`; $('#list-title').textContent=state.trash?'Cestino archivio':state.folderId?(state.folders.find(folder=>folder.id===state.folderId)?.name||'Cartella'):'Tutti i messaggi';
-    $('#message-list').innerHTML=data.items.length?data.items.map(message=>`<button class="message-row ${message.is_read?'':'unread'}" data-message="${message.id}" title="${esc(message.sender||'')}"><span class="row-avatar" aria-hidden="true">${esc(senderInitial(message.sender))}</span><span class="message-main"><span class="message-line"><strong>${esc(senderName(message.sender)||'Mittente sconosciuto')}</strong><time>${date(message.date)}</time></span><span class="message-subject">${esc(message.subject)||'(nessun oggetto)'}</span><span class="snippet">${esc(message.snippet)}</span></span><span class="row-marks">${message.has_attachments?icon('paperclip'):''}<span class="star ${message.is_starred?'active':''}">${icon('star')}</span></span></button>`).join(''):`<div class="empty-list">${icon('mail')}<p>Nessun messaggio corrisponde alla ricerca.</p></div>`;
-    const pages=Math.max(1,Math.ceil(data.total/state.pageSize));$('#page-label').textContent=`${state.page} di ${pages}`;$('#prev-page').disabled=state.page<=1;$('#next-page').disabled=state.page>=pages;
+    $('#result-count').textContent=`${numberFmt(data.total)} ${t('results')}`; $('#list-title').textContent=state.trash?t('trashFolder'):state.folderId?(state.folders.find(folder=>folder.id===state.folderId)?.name||t('folderSingular')):t('allMessages');
+    $('#message-list').innerHTML=data.items.length?data.items.map(message=>`<button class="message-row ${message.is_read?'':'unread'}" data-message="${message.id}" title="${esc(message.sender||'')}"><span class="row-avatar" aria-hidden="true">${esc(senderInitial(message.sender))}</span><span class="message-main"><span class="message-line"><strong>${esc(senderName(message.sender)||t('unknownSender'))}</strong><time>${date(message.date)}</time></span><span class="message-subject">${esc(message.subject)||t('noSubject')}</span><span class="snippet">${esc(message.snippet)}</span></span><span class="row-marks">${message.has_attachments?icon('paperclip'):''}<span class="star ${message.is_starred?'active':''}">${icon('star')}</span></span></button>`).join(''):`<div class="empty-list">${icon('mail')}<p>${t('noSearchResults')}</p></div>`;
+    const pages=Math.max(1,Math.ceil(data.total/state.pageSize));$('#page-label').textContent=`${state.page} ${t('pageOfSeparator')} ${pages}`;$('#prev-page').disabled=state.page<=1;$('#next-page').disabled=state.page>=pages;
   } catch(error){$('#message-list').innerHTML=`<div class="empty-list error">${esc(error.message)}</div>`;}
 }
 $('#message-list').addEventListener('click',async event=>{const row=event.target.closest('[data-message]');if(!row)return;$$('.message-row').forEach(item=>item.classList.remove('selected'));row.classList.add('selected');await readThread(Number(row.dataset.message));});
@@ -446,13 +451,13 @@ async function readThread(id){
   const reader=$('#reader');reader.innerHTML=skeleton(4);
   try {
     const thread=await api(`/api/messages/${id}/thread`);
-    reader.innerHTML=`<header class="reader-heading"><button class="mobile-reader-back ghost" type="button">${icon('arrowLeft')}<span>Messaggi</span></button><div><p class="eyebrow">CONVERSAZIONE · ${thread.length}</p><h1>${esc(thread.at(-1)?.subject)}</h1></div></header>`+thread.map(message=>`<section class="thread-message"><details ${message.id===id||thread.length===1?'open':''}><summary><span class="row-avatar" aria-hidden="true">${esc(senderInitial(message.sender))}</span><div><strong>${esc(senderName(message.sender)||'Mittente sconosciuto')}</strong><span>${date(message.date)} · ${esc(folderLeaf(message.folder))}</span></div>${icon('chevronDown','thread-chevron')}</summary><div class="message-toolbar">${message.has_html?`<button class="ghost" data-message-action="remote" data-id="${message.id}" type="button">Carica immagini remote</button>`:''}${message.is_deleted?`<button class="secondary" data-message-action="restore" data-id="${message.id}" type="button">Ripristina</button><button class="danger" data-message-action="permanent" data-id="${message.id}" type="button">Elimina definitivamente</button>`:`<button class="danger ghost-danger" data-message-action="trash" data-id="${message.id}" type="button">Sposta nel cestino</button>`}</div><div class="message-meta"><div><b>A:</b> ${esc(message.to||'—')}</div>${message.cc?`<div><b>CC:</b> ${esc(message.cc)}</div>`:''}${message.bcc?`<div><b>BCC:</b> ${esc(message.bcc)}</div>`:''}</div>${message.has_html?`<iframe id="mail-frame-${message.id}" class="mail-frame" sandbox="allow-same-origin" src="${message.render_url}" title="Contenuto email"></iframe>`:`<div class="mail-body"><pre>${esc(message.text_body)}</pre></div>`}${renderAttachments(message)}<div class="raw-link"><a href="${message.raw_url}">${icon('download')}Scarica messaggio originale (.eml)</a></div></details></section>`).join('');
+    reader.innerHTML=`<header class="reader-heading"><button class="mobile-reader-back ghost" type="button">${icon('arrowLeft')}<span>${t('backToMessages')}</span></button><div><p class="eyebrow">${t('conversationEyebrow')} · ${thread.length}</p><h1>${esc(thread.at(-1)?.subject)}</h1></div></header>`+thread.map(message=>`<section class="thread-message"><details ${message.id===id||thread.length===1?'open':''}><summary><span class="row-avatar" aria-hidden="true">${esc(senderInitial(message.sender))}</span><div><strong>${esc(senderName(message.sender)||t('unknownSender'))}</strong><span>${date(message.date)} · ${esc(folderLeaf(message.folder))}</span></div>${icon('chevronDown','thread-chevron')}</summary><div class="message-toolbar">${message.has_html?`<button class="ghost" data-message-action="remote" data-id="${message.id}" type="button">${t('loadRemoteImages')}</button>`:''}${message.is_deleted?`<button class="secondary" data-message-action="restore" data-id="${message.id}" type="button">${t('restoreMessage')}</button><button class="danger" data-message-action="permanent" data-id="${message.id}" type="button">${t('deletePermanently')}</button>`:`<button class="danger ghost-danger" data-message-action="trash" data-id="${message.id}" type="button">${t('moveToTrash')}</button>`}</div><div class="message-meta"><div><b>${t('toField')}</b> ${esc(message.to||'—')}</div>${message.cc?`<div><b>${t('ccField')}</b> ${esc(message.cc)}</div>`:''}${message.bcc?`<div><b>${t('bccField')}</b> ${esc(message.bcc)}</div>`:''}</div>${message.has_html?`<iframe id="mail-frame-${message.id}" class="mail-frame" sandbox="allow-same-origin" src="${message.render_url}" title="${esc(message.subject||'')}"></iframe>`:`<div class="mail-body"><pre>${esc(message.text_body)}</pre></div>`}${renderAttachments(message)}<div class="raw-link"><a href="${message.raw_url}">${icon('download')}${t('downloadOriginalEml')}</a></div></details></section>`).join('');
     reader.scrollTop=0;
   } catch(error){reader.innerHTML=`<div class="reader-empty error">${esc(error.message)}</div>`;}
 }
 function renderAttachments(message){
   const files=message.attachments.filter(attachment=>!attachment.is_inline); if(!files.length)return'';
-  return`<div class="attachments"><h3>Allegati · ${files.length}</h3><div>${files.map(attachment=>{const item={...attachment,message_id:message.id,subject:message.subject,sender:message.sender,folder:message.folder,date:message.date};const label=extensionLabel(item);return`<button type="button" class="${extensionClass(label)}" data-open-attachment='${attachmentData(item)}'>${attachmentPreview(item)}<b title="${esc(attachment.filename)}">${esc(attachment.filename)}</b><small>${label} · ${bytes(attachment.size)}</small></button>`;}).join('')}</div></div>`;
+  return`<div class="attachments"><h3>${t('attachmentsHeading')} · ${files.length}</h3><div>${files.map(attachment=>{const item={...attachment,message_id:message.id,subject:message.subject,sender:message.sender,folder:message.folder,date:message.date};const label=extensionLabel(item);return`<button type="button" class="${extensionClass(label)}" data-open-attachment='${attachmentData(item)}'>${attachmentPreview(item)}<b title="${esc(attachment.filename)}">${esc(attachment.filename)}</b><small>${label} · ${bytes(attachment.size)}</small></button>`;}).join('')}</div></div>`;
 }
 $('#reader').addEventListener('click',async event=>{
   if(event.target.closest('.mobile-reader-back'))return $('#reader').innerHTML=emptyReader();
@@ -461,10 +466,10 @@ $('#reader').addEventListener('click',async event=>{
   const id=Number(button.dataset.id),action=button.dataset.messageAction;
   try{
     if(action==='remote'){const frame=$(`#mail-frame-${id}`);frame.src=`/api/messages/${id}/render?remote_images=1`;button.remove();return;}
-    if(action==='trash'&&await confirmAction('Eliminare questa email dall’archivio?', 'Non verrà eliminata dalla mailbox originale.'))await api(`/api/messages/${id}/trash`,{method:'POST'});
+    if(action==='trash'&&await confirmAction(t('confirmDeleteEmailTitle'), t('confirmDeleteEmailCopy')))await api(`/api/messages/${id}/trash`,{method:'POST'});
     if(action==='restore')await api(`/api/messages/${id}/restore`,{method:'POST'});
-    if(action==='permanent'&&await confirmAction('Eliminare definitivamente?', 'Il messaggio verrà rimosso solo da questa versione locale.'))await api(`/api/messages/${id}/permanent`,{method:'DELETE'});
-    toast(action==='restore'?'Email ripristinata':action==='trash'?'Email spostata nel cestino archivio':'Email eliminata definitivamente');$('#reader').innerHTML=emptyReader();await Promise.all([loadMessages(),loadStats()]);
+    if(action==='permanent'&&await confirmAction(t('confirmDeletePermanentTitle'), t('confirmDeletePermanentCopy')))await api(`/api/messages/${id}/permanent`,{method:'DELETE'});
+    toast(action==='restore'?t('toastEmailRestored'):action==='trash'?t('toastEmailTrashed'):t('toastEmailDeleted'));$('#reader').innerHTML=emptyReader();await Promise.all([loadMessages(),loadStats()]);
   }catch(error){toast(error.message,'error');}
 });
 let searchTimer;$('#search-input').addEventListener('input',()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>{state.page=1;loadMessages();},350)});
@@ -508,18 +513,18 @@ function attachmentCard(item) {
 }
 async function loadAttachments(){
   const container=$('#attachments-results'),a=state.attachments;container.innerHTML=skeleton(8);
-  try{const params=new URLSearchParams({snapshot_id:state.snapshotId,page:a.page,page_size:a.pageSize,category:a.category});if(a.q)params.set('q',a.q);if(state.folderId)params.set('folder_id',state.folderId);const data=await api(`/api/accounts/${state.account.id}/attachments?${params}`);a.total=data.total;$('#attachments-count').textContent=`${data.total.toLocaleString('it-IT')} file`;container.className=`attachments-results ${a.mode}`;container.innerHTML=data.items.length?data.items.map(attachmentCard).join(''):`<div class="empty-list">${icon('file')}<p>Nessun allegato corrisponde ai filtri.</p></div>`;const pages=Math.max(1,Math.ceil(data.total/a.pageSize));$('#attachments-page').textContent=`${a.page} di ${pages}`;$('#attachments-prev').disabled=a.page<=1;$('#attachments-next').disabled=a.page>=pages;}catch(error){container.innerHTML=`<div class="empty-list error">${esc(error.message)}</div>`;}
+  try{const params=new URLSearchParams({snapshot_id:state.snapshotId,page:a.page,page_size:a.pageSize,category:a.category});if(a.q)params.set('q',a.q);if(state.folderId)params.set('folder_id',state.folderId);const data=await api(`/api/accounts/${state.account.id}/attachments?${params}`);a.total=data.total;$('#attachments-count').textContent=`${numberFmt(data.total)} file`;container.className=`attachments-results ${a.mode}`;container.innerHTML=data.items.length?data.items.map(attachmentCard).join(''):`<div class="empty-list">${icon('file')}<p>${t('noAttachmentsMatch')}</p></div>`;const pages=Math.max(1,Math.ceil(data.total/a.pageSize));$('#attachments-page').textContent=`${a.page} ${t('pageOfSeparator')} ${pages}`;$('#attachments-prev').disabled=a.page<=1;$('#attachments-next').disabled=a.page>=pages;}catch(error){container.innerHTML=`<div class="empty-list error">${esc(error.message)}</div>`;}
 }
 async function openAttachmentViewer(item){
   const dialog=$('#attachment-viewer'),mime=(item.content_type||'').toLowerCase(),extension=(item.extension||item.filename?.split('.').pop()||'').toLowerCase(),url=item.open_url||`/api/attachments/${item.id}?inline=1`;
-  $('#viewer-filename').textContent=item.filename;$('#viewer-meta').textContent=`${mime||extension||'File'} · ${bytes(item.size)}`;$('#viewer-download').href=item.download_url||`/api/attachments/${item.id}`;$('#viewer-show-email').dataset.messageId=item.message_id||'';
-  const content=$('#viewer-content');content.innerHTML='<div class="loading">Apertura anteprima…</div>';dialog.showModal();
+  $('#viewer-filename').textContent=item.filename;$('#viewer-meta').textContent=`${mime||extension||t('fileFallback')} · ${bytes(item.size)}`;$('#viewer-download').href=item.download_url||`/api/attachments/${item.id}`;$('#viewer-show-email').dataset.messageId=item.message_id||'';
+  const content=$('#viewer-content');content.innerHTML=`<div class="loading">${t('openingPreview')}</div>`;dialog.showModal();
   if(mime.startsWith('image/')||['jpg','jpeg','png','webp','gif','svg'].includes(extension))content.innerHTML=`<img class="viewer-image" src="${url}" alt="${esc(item.filename)}">`;
   else if(mime==='application/pdf'||extension==='pdf')content.innerHTML=`<iframe class="viewer-frame" src="${url}" title="PDF ${esc(item.filename)}"></iframe>`;
   else if(mime.startsWith('audio/'))content.innerHTML=`<audio controls src="${url}"></audio>`;
   else if(mime.startsWith('video/'))content.innerHTML=`<video controls src="${url}"></video>`;
-  else if(mime.startsWith('text/')||['txt','csv','json','xml','log','md','yaml','yml'].includes(extension)){try{const response=await fetch(item.text_preview_url||`/api/attachments/${item.id}/text-preview`);if(!response.ok)throw new Error('Anteprima non disponibile');content.innerHTML=`<pre class="viewer-text">${esc(await response.text())}</pre>`;}catch(error){content.innerHTML=`<div class="viewer-unsupported">${icon('file')}<p>${esc(error.message)}</p><small>Il file resta disponibile tramite Download.</small></div>`;}}
-  else content.innerHTML=`<div class="viewer-unsupported">${icon('file')}<h3>${esc(item.filename)}</h3><p>${esc(mime||'Formato non supportato')}</p><small>Anteprima locale non disponibile. Usa Download per aprire il file con un’app compatibile.</small></div>`;
+  else if(mime.startsWith('text/')||['txt','csv','json','xml','log','md','yaml','yml'].includes(extension)){try{const response=await fetch(item.text_preview_url||`/api/attachments/${item.id}/text-preview`);if(!response.ok)throw new Error(t('previewUnavailable'));content.innerHTML=`<pre class="viewer-text">${esc(await response.text())}</pre>`;}catch(error){content.innerHTML=`<div class="viewer-unsupported">${icon('file')}<p>${esc(error.message)}</p><small>${t('fileAvailableViaDownload')}</small></div>`;}}
+  else content.innerHTML=`<div class="viewer-unsupported">${icon('file')}<h3>${esc(item.filename)}</h3><p>${esc(mime||t('unsupportedFormat'))}</p><small>${t('localPreviewUnavailable')}</small></div>`;
 }
 async function showEmailFromAttachment(messageId){$('#attachment-viewer').close();showArchiveView('messages');state.trash=false;state.folderId=null;state.page=1;renderFolders();await loadMessages();await readThread(Number(messageId));}
 $('#attachments-results').addEventListener('click',event=>{const show=event.target.closest('[data-show-email]');if(show)return showEmailFromAttachment(show.dataset.showEmail);if(event.target.closest('a'))return;const open=event.target.closest('[data-view-attachment]');if(open)return openAttachmentViewer(JSON.parse(open.dataset.viewAttachment));});
@@ -538,13 +543,13 @@ $('#nav-dashboard').addEventListener('click',()=>{showDashboard();$('#account-gr
 async function loadPasskeys() {
   const list = $('#passkey-list');
   if (!list) return;
-  list.innerHTML = '<p class="muted">Caricamento passkey…</p>';
+  list.innerHTML = `<p class="muted">${t('loadingPasskeys')}</p>`;
   try {
     const passkeys = await api('/api/passkeys');
     list.innerHTML = passkeys.length ? passkeys.map(item => `<article class="passkey-item">
-      <div><b>${esc(item.name || 'Passkey')}</b><small>${item.last_used_at ? `Ultimo uso ${date(item.last_used_at)}` : `Creata ${date(item.created_at)}`}${item.backed_up ? ' · sincronizzata' : ''}</small></div>
-      <button class="ghost danger-text" type="button" data-passkey-delete="${item.id}">Rimuovi</button>
-    </article>`).join('') : '<p class="muted">Nessuna passkey registrata. Aggiungine una per accedere senza digitare la password.</p>';
+      <div><b>${esc(item.name || 'Passkey')}</b><small>${item.last_used_at ? `${t('lastUsed')} ${date(item.last_used_at)}` : `${t('created')} ${date(item.created_at)}`}${item.backed_up ? ` · ${t('synced')}` : ''}</small></div>
+      <button class="ghost danger-text" type="button" data-passkey-delete="${item.id}">${t('removePasskey')}</button>
+    </article>`).join('') : `<p class="muted">${t('noPasskeysRegistered')}</p>`;
   } catch (error) {
     list.innerHTML = `<p class="muted">${esc(error.message)}</p>`;
   }
@@ -552,17 +557,17 @@ async function loadPasskeys() {
 async function addPasskey() {
   const status = $('#passkey-status');
   if (!window.PublicKeyCredential || !navigator.credentials) {
-    status.textContent = 'Questo browser non supporta le passkey.';
+    status.textContent = t('passkeyNotSupported');
     return;
   }
-  status.textContent = 'Apri il prompt del browser…';
+  status.textContent = t('openingBrowserPrompt');
   try {
     const options = await api('/api/passkeys/register/options', {method:'POST'});
     const credential = await navigator.credentials.create({publicKey: registrationOptionsFromJSON(options)});
-    if (!credential) throw new Error('Registrazione annullata');
+    if (!credential) throw new Error(t('registrationCancelled'));
     await api('/api/passkeys/register/verify', {method:'POST', body:JSON.stringify({credential: credentialToJSON(credential), name: 'Passkey'})});
     status.textContent = '';
-    toast('Passkey aggiunta');
+    toast(t('toastPasskeyAdded'));
     loadPasskeys();
   } catch (error) {
     status.textContent = error.message;
@@ -575,7 +580,7 @@ $('#passkey-list')?.addEventListener('click', async event => {
   if (!button) return;
   try {
     await api(`/api/passkeys/${button.dataset.passkeyDelete}`, {method:'DELETE'});
-    toast('Passkey rimossa');
+    toast(t('toastPasskeyRemoved'));
     loadPasskeys();
   } catch (error) {
     toast(error.message, 'error');
@@ -587,35 +592,35 @@ $('#versions-button').addEventListener('click',()=>{$('#versions-dialog').showMo
 $('#versions-dialog').addEventListener('click',async event=>{const button=event.target.closest('[data-protection]');if(!button)return;try{await api(`/api/snapshots/${button.dataset.id}/protection`,{method:'POST',body:JSON.stringify({action:button.dataset.protection})});toast(button.dataset.protection==='keep'?'Versione protetta conservata':'Protezione rimossa e retention applicata');state.versions=await api(`/api/accounts/${state.account.id}/versions`);renderVersions();}catch(error){toast(error.message,'error');}});
 
 const processIcons={backup:'inbox',transfer:'transfer',import:'upload'};
-const processStageLabel={queued:'IN CODA',running:'IN CORSO',cancelling:'ANNULLAMENTO…'};
+function processStageLabel(status){ return ({queued:t('queuedState'),running:t('runningState'),cancelling:t('cancellingState')})[status]; }
 function processCard(item){
   const metrics=[];
-  if(item.total!=null)metrics.push(`<span>${(item.processed||0).toLocaleString('it-IT')} / ${item.total.toLocaleString('it-IT')} messaggi</span>`);
+  if(item.total!=null)metrics.push(`<span>${numberFmt(item.processed||0)} / ${numberFmt(item.total)} ${t('messagesUnit')}</span>`);
   if(item.eta_seconds!=null&&item.status==='running')metrics.push(`<span>ETA ${duration(item.eta_seconds)}</span>`);
   return `<article class="activity-job ${item.status}">
-    <div class="activity-state"><span class="activity-kind">${icon(processIcons[item.kind]||'file')}<b>${esc(processStageLabel[item.status]||item.status.toUpperCase())}</b></span><span>${item.percent}%</span></div>
+    <div class="activity-state"><span class="activity-kind">${icon(processIcons[item.kind]||'file')}<b>${esc(processStageLabel(item.status)||item.status.toUpperCase())}</b></span><span>${item.percent}%</span></div>
     <h3>${esc(item.label)}</h3><p>${esc(item.detail||'')}</p>
     <div class="progress"><i data-progress="${item.percent}"></i></div>
     ${metrics.length?`<div class="activity-metrics">${metrics.join('')}</div>`:''}
     ${item.error?`<p class="card-error">${esc(item.error)}</p>`:''}
-    ${item.cancel_url?`<button data-cancel-process="${esc(item.cancel_url)}" data-kind="${item.kind}" class="secondary">Annulla</button>`:''}
+    ${item.cancel_url?`<button data-cancel-process="${esc(item.cancel_url)}" data-kind="${item.kind}" class="secondary">${t('cancel')}</button>`:''}
   </article>`;
 }
 async function loadActivity(quiet=false){
   try{
     const data=await api('/api/active-processes'),active=data.count>0;
     $('#backup-activity-button').classList.toggle('hidden',!active);
-    $('#activity-summary').textContent=active?`${data.count} in corso`:'Processi attivi';
-    $('#activity-content').innerHTML=data.items.length?data.items.map(processCard).join(''):'<div class="empty-list"><p>Nessun processo attivo o in coda.</p></div>';
+    $('#activity-summary').textContent=active?`${data.count} ${t('runningState').toLowerCase()}`:t('activeProcesses');
+    $('#activity-content').innerHTML=data.items.length?data.items.map(processCard).join(''):`<div class="empty-list"><p>${t('noActiveProcesses')}</p></div>`;
     applyProgressWidths($('#activity-content'));
   }catch(error){if(!quiet)toast(error.message,'error');}
 }
 $('#backup-activity-button').addEventListener('click',()=>{$('#activity-dialog').showModal();loadActivity();});
 $('#activity-content').addEventListener('click',async event=>{
   const button=event.target.closest('[data-cancel-process]');if(!button)return;
-  const confirmText=button.dataset.kind==='transfer'?'Interrompere il ripristino?':'Interrompere il backup?';
-  if(!await confirmAction(confirmText,'L’operazione incompleta verrà annullata.'))return;
-  try{await api(button.dataset.cancelProcess,{method:'POST'});toast('Annullamento richiesto');await loadActivity();}catch(error){toast(error.message,'error');}
+  const confirmText=button.dataset.kind==='transfer'?t('confirmCancelRestoreTitle'):t('confirmCancelBackupTitle2');
+  if(!await confirmAction(confirmText,t('confirmCancelProcessCopy')))return;
+  try{await api(button.dataset.cancelProcess,{method:'POST'});toast(t('toastCancelRequested'));await loadActivity();}catch(error){toast(error.message,'error');}
 });
 const collapsed=localStorage.getItem('emboxa-sidebar-collapsed')==='true';document.body.classList.toggle('sidebar-collapsed',collapsed);
 $('#sidebar-collapse').addEventListener('click',()=>{document.body.classList.toggle('sidebar-collapsed');localStorage.setItem('emboxa-sidebar-collapsed',document.body.classList.contains('sidebar-collapsed'));});
@@ -633,73 +638,74 @@ function uploadArchiveFormData(data, onProgress) {
     xhr.open('POST', '/api/import');
     xhr.setRequestHeader('X-CSRF-Token', csrf);
     xhr.upload.onprogress = event => {
-      if (!event.lengthComputable) return onProgress?.(8, 'Upload archivio in corso…');
+      if (!event.lengthComputable) return onProgress?.(8, t('uploadInProgress'));
       const percent = Math.max(1, Math.min(70, Math.round((event.loaded / event.total) * 70)));
       const seconds = Math.max(.1, (performance.now() - started) / 1000);
-      onProgress?.(percent, `Upload archivio · ${bytes(event.loaded)} / ${bytes(event.total)} · ${bytes(event.loaded / seconds)}/s`);
+      onProgress?.(percent, `${t('uploadingArchive')} · ${bytes(event.loaded)} / ${bytes(event.total)} · ${bytes(event.loaded / seconds)}/s`);
     };
-    xhr.upload.onload = () => onProgress?.(72, 'Upload completato. Verifica e importazione del pacchetto .mailvault…');
+    xhr.upload.onload = () => onProgress?.(72, t('uploadCompleteVerifying'));
     xhr.onload = () => {
       let payload = null;
       try { payload = xhr.responseText ? JSON.parse(xhr.responseText) : null; } catch {}
-      if (xhr.status === 401) { location.href = '/login'; return reject(new Error('Sessione scaduta')); }
-      if (xhr.status < 200 || xhr.status >= 300) return reject(new Error(payload?.detail || `Errore ${xhr.status}`));
+      if (xhr.status === 401) { location.href = '/login'; return reject(new Error(t('sessionExpired'))); }
+      if (xhr.status < 200 || xhr.status >= 300) return reject(new Error(payload?.detail || `${t('errorPrefix')} ${xhr.status}`));
       resolve(payload);
     };
-    xhr.onerror = () => reject(new Error('Upload archivio non riuscito'));
+    xhr.onerror = () => reject(new Error(t('importFailedGeneric')));
     xhr.send(data);
   });
 }
 async function waitForArchiveImportJob(job) {
   let current = job;
   while (current.status === 'queued' || current.status === 'running') {
-    importProgress(current.status === 'queued' ? 'Import in coda…' : 'Import in corso…', current.percent || 1, current.detail || 'Import archivio in background.');
+    importProgress(current.status === 'queued' ? t('importQueued') : t('importRunning'), current.percent || 1, current.detail || t('importBackgroundNote'));
     await wait(1500);
     current = await api(current.status_url);
   }
-  if (current.status === 'failed') throw new Error(current.error || current.detail || 'Import non riuscito');
+  if (current.status === 'failed') throw new Error(current.error || current.detail || t('importFailedGeneric'));
   return current;
 }
 function ioCard(action, svg, title, copy) {
   return `<button class="io-card" type="button" data-io="${action}">${svg}<b>${esc(title)}</b><small>${esc(copy)}</small></button>`;
 }
 function setIO(title, subtitle, html) {
+  // title/subtitle are already-localized strings coming from t().
   $('#io-title').textContent = title;
   $('#io-subtitle').textContent = subtitle;
   $('#io-content').innerHTML = html;
 }
 function renderIOMain() {
-  setIO('Import / Export', 'Scegli se portare dentro un archivio o salvarne uno fuori.', `<div class="io-grid">
-    ${ioCard('import-mailvault', icon('upload'), 'Import .mailvault', 'Upload, link diretto o cartella locale della NAS.')}
-    ${ioCard('import-mbox', icon('mail'), 'Import MBOX', 'Crea una casella offline da file MBOX.')}
-    ${ioCard('export-start', icon('archive'), 'Export archivio', 'Scegli la casella e poi browser o cartella NAS.')}
+  setIO(t('navImportExport'), t('ioMainSubtitle'), `<div class="io-grid">
+    ${ioCard('import-mailvault', icon('upload'), t('importMailvaultTitle'), t('importMailvaultCopy'))}
+    ${ioCard('import-mbox', icon('mail'), t('importMboxTitle'), t('importMboxCopy'))}
+    ${ioCard('export-start', icon('archive'), t('exportArchiveTitle'), t('exportArchiveCopy2'))}
   </div>`);
 }
 function renderMailvaultImportMethods() {
-  setIO('Import .mailvault', 'Scegli da dove prendere il pacchetto.', `<button class="ghost io-back" type="button" data-io="back">← Indietro</button><div class="io-grid">
-    ${ioCard('mailvault-upload', icon('upload'), 'Upload', 'Scegli un file .mailvault dal PC, con barra e velocità.')}
-    ${ioCard('mailvault-link', icon('link'), 'Link', 'Il server scarica il .mailvault direttamente dal link.')}
-    ${ioCard('mailvault-local', icon('server'), 'Cartella NAS', 'Importa i .mailvault già copiati in /data/local-imports.')}
+  setIO(t('importMailvaultTitle'), t('chooseSourceTitle'), `<button class="ghost io-back" type="button" data-io="back">${t('backLink')}</button><div class="io-grid">
+    ${ioCard('mailvault-upload', icon('upload'), t('uploadTitle'), t('uploadCopy'))}
+    ${ioCard('mailvault-link', icon('link'), t('linkTitle'), t('linkCopyMailvault'))}
+    ${ioCard('mailvault-local', icon('server'), t('nasFolderTitle'), t('nasFolderCopyMailvault'))}
   </div>`);
 }
 function renderMboxImportMethods() {
-  setIO('Import MBOX', 'Scegli come importare file MBOX come account offline.', `<button class="ghost io-back" type="button" data-io="back">← Indietro</button><div class="io-grid">
-    ${ioCard('mbox-upload', icon('upload'), 'Upload cartella/file', 'Seleziona MBOX dal PC.')}
-    ${ioCard('mbox-link', icon('link'), 'Link', 'Il server scarica il file MBOX direttamente dal link.')}
-    ${ioCard('mbox-local', icon('server'), 'Cartella NAS', 'Importa MBOX già copiati in /data/local-imports.')}
+  setIO(t('importMboxTitle'), t('chooseMboxImportTitle'), `<button class="ghost io-back" type="button" data-io="back">${t('backLink')}</button><div class="io-grid">
+    ${ioCard('mbox-upload', icon('upload'), t('uploadFolderFileTitle'), t('uploadFolderFileCopy'))}
+    ${ioCard('mbox-link', icon('link'), t('linkTitle'), t('linkCopyMbox'))}
+    ${ioCard('mbox-local', icon('server'), t('nasFolderTitle'), t('nasFolderCopyMbox'))}
   </div>`);
 }
 function renderExportAccounts() {
   const accounts = state.accounts.filter(account => account.has_archive);
-  setIO('Export archivio', 'Scegli quale casella esportare.', `<button class="ghost io-back" type="button" data-io="back">← Indietro</button><div class="io-grid">${
-    accounts.length ? accounts.map(account => ioCard(`export-account:${account.id}`, icon('archive'), account.display_name, `${account.email} · ${bytes(account.archive_size)}`)).join('') : '<p class="muted">Nessun archivio esportabile.</p>'
+  setIO(t('exportArchiveTitle'), t('chooseExportMailboxTitle'), `<button class="ghost io-back" type="button" data-io="back">${t('backLink')}</button><div class="io-grid">${
+    accounts.length ? accounts.map(account => ioCard(`export-account:${account.id}`, icon('archive'), account.display_name, `${account.email} · ${bytes(account.archive_size)}`)).join('') : `<p class="muted">${t('noExportableArchive')}</p>`
   }</div>`);
 }
 function renderExportMethods(accountId) {
   const account = state.accounts.find(item => item.id === accountId);
-  setIO('Export archivio', account ? `${account.display_name} · ${account.email}` : 'Scegli destinazione', `<button class="ghost io-back" type="button" data-io="export-start">← Caselle</button><div class="io-grid">
-    ${ioCard(`export-browser:${accountId}`, icon('upload'), 'Download browser', 'Crea il .mailvault e lo scarica sul PC.')}
-    ${ioCard(`export-nas:${accountId}`, icon('server'), 'Cartella NAS', 'Salva il .mailvault in /data/local-exports.')}
+  setIO(t('exportArchiveTitle'), account ? `${account.display_name} · ${account.email}` : t('chooseDestination'), `<button class="ghost io-back" type="button" data-io="export-start">${t('backToMailboxes')}</button><div class="io-grid">
+    ${ioCard(`export-browser:${accountId}`, icon('upload'), t('downloadBrowserTitle'), t('downloadBrowserCopy'))}
+    ${ioCard(`export-nas:${accountId}`, icon('server'), t('nasFolderTitle'), t('nasFolderExportCopy'))}
   </div>`);
 }
 $('#import-export-button').addEventListener('click',()=>{renderIOMain();$('#io-dialog').showModal();$('.main-sidebar').classList.remove('open');});
@@ -725,47 +731,47 @@ $('#import-input').addEventListener('change',async event=>{
   const file=event.target.files[0];if(!file)return;
   const data=new FormData();data.append('file',file);
   const dialog=$('#import-dialog');$('#import-close').disabled=true;$('#import-done').disabled=true;
-  $('#import-summary').textContent=`File locale · ${esc(file.name)} · ${bytes(file.size)}`;
-  importProgress('Upload archivio…',1,'Carico il file .mailvault sul server.');
+  $('#import-summary').textContent=`${t('localFileSummary')} · ${esc(file.name)} · ${bytes(file.size)}`;
+  importProgress(t('uploadingArchive'),1,t('uploadingFileNote'));
   dialog.showModal();
   try{
-    const job=await uploadArchiveFormData(data,(percent,detail)=>importProgress('Upload archivio…',percent,detail));
+    const job=await uploadArchiveFormData(data,(percent,detail)=>importProgress(t('uploadingArchive'),percent,detail));
     await waitForArchiveImportJob(job);
-    importProgress('Import completato',100,'Archivio importato. Ora compare nella dashboard.');
-    toast('Archivio importato');
+    importProgress(t('importCompleted'),100,t('importCompletedNote'));
+    toast(t('toastArchiveImported'));
     loadAccounts();
-  }catch(error){importProgress('Import non completato',0,error.message);toast(error.message,'error');}
+  }catch(error){importProgress(t('importNotCompleted'),0,error.message);toast(error.message,'error');}
   finally{$('#import-close').disabled=false;$('#import-done').disabled=false;event.target.value='';}
 });
 async function importArchiveFromLink(){
-  const url=(prompt('Incolla il link diretto al file .mailvault da importare')||'').trim();
+  const url=(prompt(t('promptMailvaultLink'))||'').trim();
   if(!url)return;
   const dialog=$('#import-dialog');$('#import-close').disabled=true;$('#import-done').disabled=true;
-  $('#import-summary').textContent='Import da link · il server scarica il .mailvault senza upload dal browser.';
-  importProgress('Download archivio…',1,'Scarico il file direttamente dal server.');
+  $('#import-summary').textContent=t('importFromLinkSummary');
+  importProgress(t('downloadingArchive'),1,t('downloadingDirectNote'));
   dialog.showModal();
   try{
     const job=await api('/api/import/link',{method:'POST',body:JSON.stringify({url})});
     await waitForArchiveImportJob(job);
-    importProgress('Import completato',100,'Archivio importato. Ora compare nella dashboard.');
-    toast('Archivio importato');
+    importProgress(t('importCompleted'),100,t('importCompletedNote'));
+    toast(t('toastArchiveImported'));
     loadAccounts();
-  }catch(error){importProgress('Import non completato',0,error.message);toast(error.message,'error');}
+  }catch(error){importProgress(t('importNotCompleted'),0,error.message);toast(error.message,'error');}
   finally{$('#import-close').disabled=false;$('#import-done').disabled=false;}
 }
 async function importArchiveFromNas(mode='auto'){
-  if(!['auto','mailvault','mbox'].includes(mode))return toast('Scelta non valida: usa auto, mailvault oppure mbox','error');
+  if(!['auto','mailvault','mbox'].includes(mode))return toast(t('invalidChoice'),'error');
   const dialog=$('#import-dialog');$('#import-close').disabled=true;$('#import-done').disabled=true;
-  $('#import-summary').textContent='Import da cartella NAS · legge i file già presenti in /data/local-imports.';
-  importProgress('Import da cartella NAS…',1,'Scansione della cartella locale.');
+  $('#import-summary').textContent=t('importFromNasSummary');
+  importProgress(t('importingFromNas'),1,t('scanningLocalFolder'));
   dialog.showModal();
   try{
     const job=await api('/api/import/local',{method:'POST',body:JSON.stringify({mode,display_name:'Import NAS',email:'nas-import@local.invalid'})});
     const result=await waitForArchiveImportJob(job);
-    importProgress('Import completato',100,`Creati ${result.account_ids?.length||1} archivio/i dalla cartella NAS.`);
-    toast('Import da NAS completato');
+    importProgress(t('importCompleted'),100,`${result.account_ids?.length||1} ${t('createdArchivesFromNas')}`);
+    toast(t('toastNasImportCompleted'));
     loadAccounts();
-  }catch(error){importProgress('Import non completato',0,error.message);toast(error.message,'error');}
+  }catch(error){importProgress(t('importNotCompleted'),0,error.message);toast(error.message,'error');}
   finally{$('#import-close').disabled=false;$('#import-done').disabled=false;}
 }
 function mboxImportProgress(status, percent = 0, detail = '') {
@@ -777,11 +783,11 @@ function mboxImportProgress(status, percent = 0, detail = '') {
 async function waitForMboxImportJob(job) {
   let current = job;
   while (current.status === 'queued' || current.status === 'running') {
-    mboxImportProgress(current.status === 'queued' ? 'Import MBOX in coda…' : 'Import MBOX in corso…', current.percent || 10, current.detail || 'Parsing dei file MBOX in background.');
+    mboxImportProgress(current.status === 'queued' ? t('mboxImportQueued') : t('mboxImportRunning'), current.percent || 10, current.detail || t('mboxParsingBackground'));
     await wait(1500);
     current = await api(current.status_url);
   }
-  if (current.status === 'failed') throw new Error(current.error || current.detail || 'Import MBOX non riuscito');
+  if (current.status === 'failed') throw new Error(current.error || current.detail || t('mboxImportFailedGeneric'));
   return current.account;
 }
 function uploadMboxFormData(data, onProgress) {
@@ -790,56 +796,56 @@ function uploadMboxFormData(data, onProgress) {
     xhr.open('POST', '/api/import/mbox');
     xhr.setRequestHeader('X-CSRF-Token', csrf);
     xhr.upload.onprogress = event => {
-      if (!event.lengthComputable) return onProgress?.(8, 'Upload MBOX in corso…');
+      if (!event.lengthComputable) return onProgress?.(8, t('uploadMboxInProgress'));
       const percent = Math.max(1, Math.min(32, Math.round((event.loaded / event.total) * 32)));
-      onProgress?.(percent, `Upload MBOX · ${bytes(event.loaded)} / ${bytes(event.total)}`);
+      onProgress?.(percent, `${t('uploadingMbox')} · ${bytes(event.loaded)} / ${bytes(event.total)}`);
     };
     xhr.onload = () => {
       let payload = null;
       try { payload = xhr.responseText ? JSON.parse(xhr.responseText) : null; } catch {}
-      if (xhr.status === 401) { location.href = '/login'; return reject(new Error('Sessione scaduta')); }
-      if (xhr.status < 200 || xhr.status >= 300) return reject(new Error(payload?.detail || `Errore ${xhr.status}`));
+      if (xhr.status === 401) { location.href = '/login'; return reject(new Error(t('sessionExpired'))); }
+      if (xhr.status < 200 || xhr.status >= 300) return reject(new Error(payload?.detail || `${t('errorPrefix')} ${xhr.status}`));
       resolve(payload);
     };
-    xhr.onerror = () => reject(new Error('Upload MBOX non riuscito'));
+    xhr.onerror = () => reject(new Error(t('mboxImportFailedGeneric')));
     xhr.send(data);
   });
 }
 $('#mbox-import-input').addEventListener('change',async event=>{
   const files=[...event.target.files]; if(!files.length)return;
-  const defaultName=files[0].webkitRelativePath?.split('/')[0]||files[0].name?.replace(/\.mbox$/i,'')||'Archivio MBOX importato';
-  const displayName=(prompt('Nome da mostrare per questo account MBOX offline', defaultName)||defaultName).trim();
+  const defaultName=files[0].webkitRelativePath?.split('/')[0]||files[0].name?.replace(/\.mbox$/i,'')||t('defaultMboxArchiveName');
+  const displayName=(prompt(t('promptMboxDisplayName'), defaultName)||defaultName).trim();
   const data=new FormData(); data.append('display_name',displayName); data.append('email','mbox-import@local.invalid');
   files.forEach(file=>data.append('files',file,file.webkitRelativePath||file.name));
   const dialog=$('#mbox-import-dialog'); $('#mbox-import-close').disabled=true; $('#mbox-import-done').disabled=true;
-  $('#mbox-import-summary').textContent=`${files.length} file selezionati · account offline senza sincronizzazione.`;
-  mboxImportProgress('Upload MBOX…',5,'Carico i file sul server, poi l’import continua in background.');
+  $('#mbox-import-summary').textContent=`${files.length} ${t('filesSelectedSummary')}`;
+  mboxImportProgress(t('uploadingMbox'),5,t('uploadingMboxNote'));
   dialog.showModal();
   try{
-    const job=await uploadMboxFormData(data,(percent,detail)=>mboxImportProgress('Upload MBOX…',percent,detail));
+    const job=await uploadMboxFormData(data,(percent,detail)=>mboxImportProgress(t('uploadingMbox'),percent,detail));
     const account=await waitForMboxImportJob(job);
-    mboxImportProgress('Import MBOX completato',100,`${account?.message_count?.toLocaleString('it-IT')||0} messaggi importati. Ora puoi aprire l’archivio come una mailbox.`);
-    toast('Import MBOX completato');
+    mboxImportProgress(t('mboxImportCompleted'),100,`${numberFmt(account?.message_count||0)} ${t('mboxImportCompletedNote')}`);
+    toast(t('toastMboxImportCompleted'));
     loadAccounts();
-  }catch(error){mboxImportProgress('Import MBOX non completato',0,error.message);toast(error.message,'error');}
+  }catch(error){mboxImportProgress(t('mboxImportNotCompleted'),0,error.message);toast(error.message,'error');}
   finally{$('#mbox-import-close').disabled=false;$('#mbox-import-done').disabled=false;event.target.value='';}
 });
 async function importMboxFromLink(){
-  const url=(prompt('Incolla il link diretto al file MBOX da scaricare sul server')||'').trim();
+  const url=(prompt(t('promptMboxLink'))||'').trim();
   if(!url)return;
-  const defaultName=new URL(url, location.href).pathname.split('/').pop()?.replace(/\.mbox$/i,'')||'Archivio MBOX importato';
-  const displayName=(prompt('Nome da mostrare per questo account MBOX offline', defaultName)||defaultName).trim();
+  const defaultName=new URL(url, location.href).pathname.split('/').pop()?.replace(/\.mbox$/i,'')||t('defaultMboxArchiveName');
+  const displayName=(prompt(t('promptMboxDisplayName'), defaultName)||defaultName).trim();
   const dialog=$('#mbox-import-dialog'); $('#mbox-import-close').disabled=true; $('#mbox-import-done').disabled=true;
-  $('#mbox-import-summary').textContent='Import da link · account offline senza sincronizzazione.';
-  mboxImportProgress('Download MBOX…',1,'Scarico il file direttamente dal server.');
+  $('#mbox-import-summary').textContent=t('mboxImportFromLinkSummary');
+  mboxImportProgress(t('downloadingMbox'),1,t('downloadingDirectNote'));
   dialog.showModal();
   try{
     const job=await api('/api/import/mbox/link',{method:'POST',body:JSON.stringify({url,display_name:displayName,email:'mbox-import@local.invalid'})});
     const account=await waitForMboxImportJob(job);
-    mboxImportProgress('Import MBOX completato',100,`${account?.message_count?.toLocaleString('it-IT')||0} messaggi importati. Ora puoi aprire l’archivio come una mailbox.`);
-    toast('Import MBOX completato');
+    mboxImportProgress(t('mboxImportCompleted'),100,`${numberFmt(account?.message_count||0)} ${t('mboxImportCompletedNote')}`);
+    toast(t('toastMboxImportCompleted'));
     loadAccounts();
-  }catch(error){mboxImportProgress('Import MBOX non completato',0,error.message);toast(error.message,'error');}
+  }catch(error){mboxImportProgress(t('mboxImportNotCompleted'),0,error.message);toast(error.message,'error');}
   finally{$('#mbox-import-close').disabled=false;$('#mbox-import-done').disabled=false;}
 }
 $('#logout-button').addEventListener('click',async()=>{await api('/api/logout',{method:'POST'});location.href='/login';});
@@ -864,7 +870,28 @@ const tourSteps=[
   {selector:'[data-action="open"]',title:'archiveTitle',copy:'archiveCopy'},
   {selector:'[data-action="export"]',title:'exportTitle',copy:'exportCopy'}
 ];
-function localize(){EMBOXA_I18N.apply(preferences.locale);$('#language-select').value=preferences.locale;$('#settings-language').value=preferences.locale;EMBOXA_I18N.syncLanguageMenus?.();}
+/* apply() resolves 'auto' to it/en and returns that resolved value; the two pill selects always
+   show a real language, never the internal 'auto' sentinel (which isn't one of their options). */
+function localize(){
+  const resolved=EMBOXA_I18N.apply(preferences.locale);
+  $('#language-select').value=resolved;$('#settings-language').value=resolved;
+  EMBOXA_I18N.syncLanguageMenus?.();
+  refreshLocalizedViews();
+}
+/* Static markup re-translates itself via data-i18n; content already rendered into innerHTML from
+   JS template literals does not, so a locale switch re-runs whatever produced the current view. */
+function refreshLocalizedViews(){
+  if (typeof loadWebUsage === 'function') loadWebUsage();
+  if (typeof renderTelegramPrefs === 'function') renderTelegramPrefs();
+  if (state.account) {
+    renderVersions();
+    renderFolders();
+    if (state.archiveView === 'attachments') loadAttachments(); else loadMessages();
+  } else if (state.accounts.length) {
+    renderAccounts();
+  }
+  if ($('#activity-dialog').open) loadActivity(true);
+}
 async function savePreferences(values){preferences=await api('/api/preferences',{method:'PATCH',body:JSON.stringify(values)});localize();}
 function hideTour(){const pop=$('#tour-popover');pop.classList.add('hidden');$$('.tour-target').forEach(el=>el.classList.remove('tour-target'));}
 function showTourStep(){hideTour();while(tourIndex<tourSteps.length&&!$(tourSteps[tourIndex].selector))tourIndex++;if(tourIndex>=tourSteps.length){savePreferences({tutorial_completed:true});return;}const step=tourSteps[tourIndex],target=$(step.selector),pop=$('#tour-popover');target.classList.add('tour-target');$('#tour-title').textContent=EMBOXA_I18N.t(step.title,preferences.locale);$('#tour-copy').textContent=EMBOXA_I18N.t(step.copy,preferences.locale);pop.classList.remove('hidden');const rect=target.getBoundingClientRect();pop.style.left=`${Math.max(12,Math.min(innerWidth-pop.offsetWidth-12,rect.left))}px`;pop.style.top=`${Math.min(innerHeight-pop.offsetHeight-12,rect.bottom+10)}px`;}
@@ -882,6 +909,6 @@ async function initExperience(){preferences=await api('/api/preferences');locali
 
 loadAccounts();initExperience();
 const microsoftResult = new URLSearchParams(location.search).get('microsoft');
-if (microsoftResult === 'connected') { toast('Account Microsoft collegato'); history.replaceState({}, '', '/app'); }
-if (microsoftResult === 'error') { toast(new URLSearchParams(location.search).get('reason') || 'Microsoft OAuth non riuscito', 'error'); history.replaceState({}, '', '/app'); }
+if (microsoftResult === 'connected') { toast(t('toastMicrosoftConnected')); history.replaceState({}, '', '/app'); }
+if (microsoftResult === 'error') { toast(new URLSearchParams(location.search).get('reason') || t('microsoftOauthFailedGeneric'), 'error'); history.replaceState({}, '', '/app'); }
 state.polling=setInterval(()=>{loadActivity(true);loadAccounts(true);},2500);

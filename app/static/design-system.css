@@ -324,6 +324,36 @@ svg {
 .icon-button.bordered:hover { border-color: var(--border-strong); }
 
 /* ==========================================================================
+   Language switch — a plain two-button IT/EN pill, the same shape wherever a
+   language choice appears (app topbar, settings dialog, admin panel, auth
+   pages). Two languages don't need a dropdown; see i18n.js for the wiring.
+   ========================================================================== */
+
+.lang-switch {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-pill);
+  background: var(--surface-secondary);
+}
+.lang-switch button {
+  min-width: 34px;
+  min-height: 30px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--fs-micro);
+  font-weight: 800;
+  letter-spacing: .02em;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.lang-switch button:hover { color: var(--heading); }
+.lang-switch button.active { background: var(--surface); color: var(--heading); box-shadow: var(--e-1); }
+[data-theme="dark"] .lang-switch button.active { background: var(--accent-soft); color: var(--accent); }
+
+/* ==========================================================================
    Badges and chips — the only pill-shaped elements in the system
    ========================================================================== */
 

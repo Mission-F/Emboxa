@@ -28,7 +28,7 @@ SETTING_DEFAULTS: dict[str, str] = {
     "public_site_url": config.PUBLIC_SITE_URL,
     "support_email": config.LEGAL_CONTACT_EMAIL,
     "default_language": "en",
-    "available_languages": "it,en,fr,de,es,pt",
+    "available_languages": "it,en",
     "registration_enabled": "true",
     "standard_storage_limit_bytes": str(config.STANDARD_STORAGE_LIMIT_BYTES),
     "standard_mailbox_limit": str(config.STANDARD_MAILBOX_LIMIT),

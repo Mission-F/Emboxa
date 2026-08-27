@@ -465,8 +465,7 @@ a { color: var(--accent-strong); }
 
 @media (max-width: 640px) {
   .topbar { flex-wrap: nowrap; gap: 6px; }
-  .language-menu summary small { display: none; }
-  .language-menu summary { min-width: 40px; justify-content: center; padding: 5px; }
+  .lang-switch { transform: scale(.92); }
   .page-heading { flex-direction: column; align-items: stretch; }
   .mobile-mailbox:not(.hidden) { display: block; flex: 1 1 auto; }
   .top-actions { gap: 2px; }
@@ -529,14 +528,8 @@ a { color: var(--accent-strong); }
 .auth-divider::before,.auth-divider::after { content:""; height:1px; flex:1; background:var(--border); }
 .passkey-button { min-height:52px; width:100%; border-radius:12px; }
 .passkey-help { margin:10px 0 0; font-size:11px; line-height:1.45; }
-.language-menu { position:relative; z-index:20; }
-.language-menu summary { min-height:38px; display:inline-flex; align-items:center; gap:7px; padding:5px 10px; border:1px solid var(--border); border-radius:999px; background:var(--surface-secondary); color:var(--text); cursor:pointer; list-style:none; }
-.language-menu summary::-webkit-details-marker { display:none; }
-.language-menu summary small { font-size:10px; font-weight:760; }
-.language-popover { position:absolute; top:calc(100% + 8px); right:0; width:190px; display:grid; gap:2px; padding:8px; border:1px solid var(--border); border-radius:12px; background:var(--surface); box-shadow:var(--shadow-lg); }
-.language-popover b { padding:7px 9px; color:var(--text-secondary); font-size:9px; letter-spacing:.1em; text-transform:uppercase; }
-.language-popover button { min-height:34px; padding:7px 9px; border:0; border-radius:8px; background:transparent; color:var(--text); text-align:left; }
-.language-popover button:hover,.language-popover button.active { background:var(--accent-soft); color:var(--heading); }
+/* .lang-switch itself lives in design-system.css; only the visually-hidden native <select>
+   it wraps (kept for change-event compatibility) is styled here. */
 .language-native { position:absolute!important; width:1px!important; height:1px!important; opacity:0!important; pointer-events:none!important; }
 .transfer-dialog { width:min(820px,calc(100% - 24px)); }
 .transfer-dialog form { display:grid; gap:14px; }

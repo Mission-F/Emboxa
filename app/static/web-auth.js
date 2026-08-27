@@ -3,15 +3,18 @@ const authStatus = document.querySelector('.form-status');
 const authLocale = document.querySelector('.auth-locale');
 const localePreference = localStorage.getItem('emboxa-locale') || 'auto';
 
+/* apply() resolves 'auto' to it/en and returns that resolved value; feed it back into the select
+   so the IT/EN pill highlights correctly (the select carries no 'auto' option). */
 function applyAuthLocale(preference) {
   const locale = window.EMBOXA_I18N?.apply(preference) || 'en';
+  if (authLocale) authLocale.value = locale;
+  window.EMBOXA_I18N?.syncLanguageMenus?.();
   const intro = document.querySelector('.auth-form-wrap > p.muted');
-  if (intro && document.querySelector('#login-form')) intro.textContent = window.EMBOXA_I18N.t('loginIntro', preference);
+  if (intro && document.querySelector('#login-form')) intro.textContent = window.EMBOXA_I18N.t('loginIntro', locale);
   return locale;
 }
+applyAuthLocale(localePreference);
 if (authLocale) {
-  authLocale.value = localePreference;
-  applyAuthLocale(localePreference);
   authLocale.addEventListener('change', () => { localStorage.setItem('emboxa-locale', authLocale.value); applyAuthLocale(authLocale.value); });
 }
 
@@ -31,10 +34,6 @@ const translatedErrors = {
     email: 'Enter a valid email address.', required: 'This field is required.', password: 'Use at least 10 characters.', mismatch: 'Passwords do not match.', terms: 'Accept the Terms and Privacy Policy to continue.', invalid: 'Email or password is invalid.', verify: 'Verify your email before signing in.', expired: 'The code or link is invalid or has expired.', exists: 'An account already exists for this email.', generic: 'The request could not be completed.', sent: 'If the account exists, a reset link has been sent.', resent: 'A new code was sent.', updated: 'Password updated. You can now log in.'
   }
 };
-translatedErrors.fr = {...translatedErrors.en, email:'Saisissez une adresse e-mail valide.', required:'Ce champ est obligatoire.', password:'Utilisez au moins 10 caractères.', mismatch:'Les mots de passe ne correspondent pas.', sent:'Si le compte existe, un lien a été envoyé.'};
-translatedErrors.de = {...translatedErrors.en, email:'Geben Sie eine gültige E-Mail-Adresse ein.', required:'Dieses Feld ist erforderlich.', password:'Verwenden Sie mindestens 10 Zeichen.', mismatch:'Die Passwörter stimmen nicht überein.', sent:'Falls das Konto existiert, wurde ein Link gesendet.'};
-translatedErrors.es = {...translatedErrors.en, email:'Introduce un correo válido.', required:'Este campo es obligatorio.', password:'Usa al menos 10 caracteres.', mismatch:'Las contraseñas no coinciden.', sent:'Si la cuenta existe, se ha enviado un enlace.'};
-translatedErrors.pt = {...translatedErrors.en, email:'Introduza um e-mail válido.', required:'Este campo é obrigatório.', password:'Use pelo menos 10 caracteres.', mismatch:'As palavras-passe não coincidem.', sent:'Se a conta existir, foi enviada uma ligação.'};
 const locale = () => window.EMBOXA_I18N?.resolve(authLocale?.value || localePreference) || 'en';
 const errorText = key => translatedErrors[locale()]?.[key] || translatedErrors.en[key];
 

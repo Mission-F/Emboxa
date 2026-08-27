@@ -10,13 +10,13 @@ const bytes = value => {
 
 const preference = localStorage.getItem('emboxa-locale') || 'auto';
 const language = $('#admin-language');
-language.value = preference;
 const t = key => window.EMBOXA_I18N?.t(key, language.value) || key;
+/* apply() resolves 'auto' via the browser; feed that resolved value back into the select so the
+   IT/EN pill highlights correctly (the select has no 'auto' option to fall back to). */
 const applyLanguage = value => {
   const locale = window.EMBOXA_I18N?.apply(value) || 'en';
-  document.querySelectorAll('[data-i18n-placeholder]').forEach(node => {
-    node.placeholder = window.EMBOXA_I18N.t(node.dataset.i18nPlaceholder, value);
-  });
+  language.value = locale;
+  window.EMBOXA_I18N?.syncLanguageMenus?.();
   return locale;
 };
 applyLanguage(preference);

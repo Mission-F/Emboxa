@@ -96,7 +96,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("emboxa")
 BASE_DIR = Path(__file__).resolve().parent
-ASSET_VERSION = "20260827-1315"
+ASSET_VERSION = "20260827-1435"
 
 
 @asynccontextmanager
@@ -286,7 +286,7 @@ def _active_snapshot(db: Session, account_id: int, snapshot_id: int | None = Non
 class RegisterPayload(BaseModel):
     email: EmailStr
     password: str = Field(min_length=10, max_length=256)
-    locale: Literal["it", "en", "fr", "de", "es", "pt"] = "en"
+    locale: Literal["it", "en"] = "en"
 
 
 class LoginPayload(BaseModel):
@@ -322,7 +322,7 @@ class PasskeyAuthenticationVerifyPayload(BaseModel):
 
 
 class PreferencesPayload(BaseModel):
-    locale: Literal["auto", "it", "en", "fr", "de", "es", "pt"] | None = None
+    locale: Literal["auto", "it", "en"] | None = None
     tutorial_completed: bool | None = None
 
 
@@ -355,8 +355,8 @@ class AdminSettingsPayload(BaseModel):
     public_app_name: str = Field(default="Emboxa Web", min_length=1, max_length=80)
     public_domain: str = Field(default=PUBLIC_APP_URL, min_length=1, max_length=500)
     support_email: str = Field(default="info@missionf.it", max_length=320)
-    default_language: Literal["it", "en", "fr", "de", "es", "pt"] = "en"
-    available_languages: str = Field(default="it,en,fr,de,es,pt", max_length=50)
+    default_language: Literal["it", "en"] = "en"
+    available_languages: str = Field(default="it,en", max_length=50)
     registration_enabled: bool = True
     standard_storage_limit_bytes: int = Field(ge=1)
     standard_mailbox_limit: int = Field(ge=1, le=1000)
@@ -1061,7 +1061,7 @@ def admin_settings(_admin: User = Depends(admin_user), db: Session = Depends(get
         "public_domain": get_setting("public_domain", PUBLIC_APP_URL, db),
         "support_email": get_setting("support_email", LEGAL_CONTACT_EMAIL, db),
         "default_language": get_setting("default_language", "en", db),
-        "available_languages": get_setting("available_languages", "it,en,fr,de,es,pt", db),
+        "available_languages": get_setting("available_languages", "it,en", db),
         "registration_enabled": get_bool_setting("registration_enabled", db=db),
         "standard_storage_limit_bytes": get_int_setting("standard_storage_limit_bytes", STANDARD_STORAGE_LIMIT_BYTES, db),
         "standard_mailbox_limit": get_int_setting("standard_mailbox_limit", STANDARD_MAILBOX_LIMIT, db),
