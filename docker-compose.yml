@@ -1,44 +1,70 @@
+# EMBOXA Web — Synology DSM (Container Manager) e qualsiasi host con Docker Compose.
+#
+# Installazione: copia questa cartella intera sul NAS (es. /volume1/docker/emboxa-web), poi
+# Container Manager → Progetto → Crea → indica questa cartella → Avvia.
+# Non serve modificare nulla per partire: tutte le variabili qui sotto hanno un valore di default.
+#
+# Database, archivi e chiavi vivono in ./data, dentro questa stessa cartella: spostare l'app
+# significa spostare la cartella. Guida passo-passo: docs/SYNOLOGY-DSM.md
+
 services:
   emboxa-web:
-    image: ghcr.io/mission-f/emboxa-web:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: emboxa-web:local
     container_name: emboxa-web
     restart: unless-stopped
     init: true
     environment:
-      DATA_DIR: ${DATA_DIR:-/data}
-      DATABASE_URL: ${DATABASE_URL:-sqlite:////data/db/mailvault.db}
+      TZ: ${TZ:-Europe/Rome}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+      # Vuoto = l'app adotta il proprietario di ./data, cioè l'utente DSM che ha copiato la
+      # cartella. Da compilare solo se vuoi forzare un utente diverso.
+      PUID: ${PUID:-}
+      PGID: ${PGID:-}
+
+      DATA_DIR: /data
+      # Vuoto = usa il database già presente in ./data/db, oppure ne crea uno nuovo se non c'è.
+      DATABASE_URL: ${DATABASE_URL:-}
       SESSION_SECRET_FILE: ${SESSION_SECRET_FILE:-/data/secrets/session.key}
       ENCRYPTION_KEY_FILE: ${ENCRYPTION_KEY_FILE:-/data/secrets/fernet.key}
-      COOKIE_SECURE: ${COOKIE_SECURE:-false}
-      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:49273}
-      PUBLIC_SITE_URL: ${PUBLIC_SITE_URL:-https://emboxa.eu}
       APP_SECRET: ${APP_SECRET:-}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+
+      # Indirizzo con cui raggiungi l'app: finisce nei link delle email di verifica e recupero
+      # password e nel redirect OAuth Microsoft. Impostalo a http://IP-DEL-NAS:49273 (o all'URL
+      # HTTPS del reverse proxy) in .env, altrimenti quei link puntano a localhost.
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:49273}
+      PUBLIC_SITE_URL: ${PUBLIC_SITE_URL:-https://emboxa.eu}
+      # true solo se apri l'app in HTTPS: con true su una semplice http:// il browser scarta il
+      # cookie di sessione e il login sembra non funzionare.
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-*}
+
+      # Servono solo a creare il primo amministratore su un'installazione vuota. Se stai copiando
+      # una cartella data/ che ha già i suoi utenti, lasciali vuoti.
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      TZ: ${TZ:-Europe/Rome}
+
       MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
       MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
       MICROSOFT_TENANT: ${MICROSOFT_TENANT:-common}
-      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
     ports:
       - "${WEB_PORT:-49273}:8000"
     volumes:
-      - emboxa_web_data:/data
+      - ./data:/data
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
       interval: 30s
       timeout: 8s
       retries: 3
-      start_period: 60s
-    stop_grace_period: 45s
+      # Il primo avvio applica le migrazioni del database: su archivi grandi può richiedere minuti.
+      start_period: 180s
+    stop_grace_period: 60s
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "5"
-
-volumes:
-  emboxa_web_data:
-    name: emboxa_web_data

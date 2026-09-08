@@ -1,0 +1,55 @@
+# Variante che scarica l'immagine pubblicata invece di compilarla, per host che non devono
+# ricostruire nulla. I dati stanno in un volume Docker gestito, non nella cartella del progetto.
+#
+# Uso:  docker compose -f deploy/docker-compose.ghcr.yml pull
+#       docker compose -f deploy/docker-compose.ghcr.yml up -d
+#
+# Su Synology DSM usa invece il docker-compose.yml nella radice: compila in locale e tiene i dati
+# dentro la cartella del progetto, così l'app si sposta copiando una cartella sola.
+
+services:
+  emboxa-web:
+    image: ghcr.io/mission-f/emboxa-web:latest
+    container_name: emboxa-web
+    restart: unless-stopped
+    init: true
+    environment:
+      TZ: ${TZ:-Europe/Rome}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      PUID: ${PUID:-}
+      PGID: ${PGID:-}
+      DATA_DIR: /data
+      DATABASE_URL: ${DATABASE_URL:-}
+      SESSION_SECRET_FILE: ${SESSION_SECRET_FILE:-/data/secrets/session.key}
+      ENCRYPTION_KEY_FILE: ${ENCRYPTION_KEY_FILE:-/data/secrets/fernet.key}
+      APP_SECRET: ${APP_SECRET:-}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      PUBLIC_APP_URL: ${PUBLIC_APP_URL:-http://localhost:49273}
+      PUBLIC_SITE_URL: ${PUBLIC_SITE_URL:-https://emboxa.eu}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
+      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
+      MICROSOFT_TENANT: ${MICROSOFT_TENANT:-common}
+    ports:
+      - "${WEB_PORT:-49273}:8000"
+    volumes:
+      - emboxa_web_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 120s
+    stop_grace_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+volumes:
+  emboxa_web_data:
+    name: emboxa_web_data

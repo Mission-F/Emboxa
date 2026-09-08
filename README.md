@@ -35,11 +35,27 @@
 - Collects archived files in a dedicated Attachments view.
 - Imports and exports portable `.mailvault` archives; PLUS users can also import Apple Mail/Thunderbird-style `.mbox` exports as offline accounts without synchronization.
 - Uses IMAP Transfer to restore archived messages to Gmail, Outlook, Yahoo, iCloud or custom IMAP destinations, with folder preservation, duplicate checks, progress and cancellation. Microsoft 365 mailboxes connected with OAuth are restored through Microsoft Graph instead of IMAP.
-- Runs as a multi-architecture container on Docker-compatible servers and TrueNAS Community.
+- Runs as a multi-architecture container on Docker-compatible servers, Synology DSM and TrueNAS Community.
 
 Free Standard accounts include **5 GB of storage and up to 2 mailboxes per user**. Administrators can change limits from the runtime settings panel; PLUS users are unlimited.
 
 ## Quick Start
+
+### Synology DSM (Container Manager)
+
+Copy the whole project folder to the NAS, then point Container Manager at it. The folder carries
+both the application and its `data/` directory, so moving the installation means copying one folder.
+
+1. Copy this folder to `/volume1/docker/emboxa-web` (Finder over SMB, or File Station).
+2. **Container Manager → Project → Create**, name it `emboxa-web` and select that folder.
+3. DSM picks up `docker-compose.yml` on its own. Confirm and finish; the first build takes a few minutes.
+4. Open `http://NAS_IP:49273`.
+
+Nothing has to be edited to start: every value in the compose file has a working default, and the
+container adopts the ownership of the copied `data/` folder instead of assuming a fixed uid.
+
+Full walkthrough, including migrating an existing installation without corrupting the SQLite
+database: **[docs/SYNOLOGY-DSM.md](docs/SYNOLOGY-DSM.md)**.
 
 ### TrueNAS Community
 
@@ -62,6 +78,10 @@ cd Emboxa
 cp .env.example .env
 ```
 
+The root `docker-compose.yml` builds the image locally and keeps all data in `./data`, next to the
+compose file. To pull the published image and use a managed Docker volume instead, use
+[`deploy/docker-compose.ghcr.yml`](deploy/docker-compose.ghcr.yml).
+
 Edit `.env` and set, at minimum:
 
 ```dotenv
@@ -72,11 +92,10 @@ ADMIN_EMAIL=admin@example.com
 ADMIN_PASSWORD=replace-with-a-long-unique-password
 ```
 
-Then start the published GHCR image:
+Then build and start:
 
 ```bash
-docker compose pull
-docker compose up -d
+docker compose up -d --build
 ```
 
 Open `http://YOUR_SERVER_IP:49273`. After the first login, clear `ADMIN_PASSWORD` in `.env` and run `docker compose up -d --force-recreate`.
@@ -119,8 +138,8 @@ The Administration panel also controls branded transactional-email options, publ
 ## Updating
 
 ```bash
-docker compose pull
-docker compose up -d
+git pull
+docker compose up -d --build
 docker image prune -f
 ```
 
@@ -128,26 +147,32 @@ The database migrations run automatically and are designed to be idempotent. Bac
 
 ## Backup and restore
 
-The Compose volume has the stable name `emboxa_web_data`. Stop EMBOXA and archive the entire volume so the database, messages and encryption keys stay consistent:
+Everything that matters lives in `./data`, next to the compose file. Stop EMBOXA first: the
+database is SQLite and copying it while the app is writing produces an inconsistent snapshot.
 
 ```bash
 docker compose stop
-docker run --rm -v emboxa_web_data:/data -v "$PWD":/backup alpine \
-  tar czf /backup/emboxa-data.tgz -C /data .
+tar czf emboxa-data.tgz data
 docker compose start
 ```
 
-Restore into an empty volume before starting the application:
+Restore by putting the folder back before starting:
 
 ```bash
 docker compose down
-docker volume create emboxa_web_data
-docker run --rm -v emboxa_web_data:/data -v "$PWD":/backup alpine \
-  tar xzf /backup/emboxa-data.tgz -C /data
+tar xzf emboxa-data.tgz
 docker compose up -d
 ```
 
-For TrueNAS, snapshot or copy the complete host dataset while the app is stopped. Losing `/data/secrets/fernet.key` makes saved encrypted credentials unrecoverable.
+The same applies to a Synology or TrueNAS install: stop the container, then copy or snapshot the
+`data` folder. When restoring the SQLite database by hand, copy `emboxa-web.db` together with its
+`-wal` and `-shm` companions if they exist.
+
+Losing `/data/secrets/fernet.key` makes saved encrypted credentials unrecoverable.
+
+Installations created from [`deploy/docker-compose.ghcr.yml`](deploy/docker-compose.ghcr.yml) keep
+their data in the `emboxa_web_data` Docker volume instead; archive it with
+`docker run --rm -v emboxa_web_data:/data -v "$PWD":/backup alpine tar czf /backup/emboxa-data.tgz -C /data .`
 
 ## Import and export
 
