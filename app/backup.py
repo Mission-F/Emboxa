@@ -164,6 +164,14 @@ class _FolderQueue:
         return []
 
 
+def _salvage(adapter, uid):
+    """What the server will still give of a message whose body it refuses, or None."""
+    try:
+        return adapter.fetch_headers_only(uid)
+    except Exception:
+        return None
+
+
 def _describe(adapter, uid) -> str:
     summary = ""
     try:
@@ -284,6 +292,7 @@ def run_backup(job_id: int) -> None:
         processed = 0
         attachment_count = 0
         skipped: list[str] = []
+        partial: list[str] = []
         folder_counts: dict[str, int] = {}
         started_monotonic = time.monotonic()
         smoothed_rate = 0.0
@@ -321,9 +330,20 @@ def run_backup(job_id: int) -> None:
                 adapter, remote_messages, unreachable = _fetch_batch(
                     adapter, account, password, remote.name, uid_batch)
                 for uid in queue.refused(unreachable):
-                    skipped.append(f"{remote.name}:{uid}")
-                    log.error("Messaggio UID %s definitivamente non scaricato dalla cartella %s",
-                              uid, remote.name)
+                    # The mailbox is the owner's. A message the provider has broken is still
+                    # theirs, so keep everything it will still give — sender, subject, date,
+                    # recipients — as a message marked plainly as missing its body, rather than
+                    # dropping it and leaving a hole in an archive someone is about to trust.
+                    salvaged = _salvage(adapter, uid)
+                    if salvaged is None:
+                        skipped.append(f"{remote.name}:{uid}")
+                        log.error("Messaggio UID %s perso: il server non fornisce nemmeno le "
+                                  "intestazioni (cartella %s)", uid, remote.name)
+                    else:
+                        partial.append(f"{remote.name}:{uid}")
+                        log.warning("Messaggio UID %s salvato senza corpo dalla cartella %s%s",
+                                    uid, remote.name, _describe(adapter, uid))
+                        remote_messages = list(remote_messages) + [salvaged]
                 if queue.second_pass_started:
                     log.info("Backup account %s, cartella %s: riprovo %s messaggi rifiutati",
                              account.id, remote.name, len(queue.pending) + 1)
@@ -445,10 +465,18 @@ def run_backup(job_id: int) -> None:
         account.last_backup_status = "completed"
         # Finished, but say so plainly if the provider refused some messages: this archive is the
         # thing people check before deleting the original mailbox.
-        shortfall = f"{len(skipped)} messaggi non scaricati dal server" if skipped else None
+        notes = []
+        if skipped:
+            notes.append(f"{len(skipped)} messaggi non scaricati dal server")
+        if partial:
+            notes.append(f"{len(partial)} salvati senza il corpo, rifiutato dal server")
+        shortfall = " · ".join(notes) if notes else None
         if skipped:
             log.error("Backup account %s completato con %s messaggi mancanti: %s",
                       account.id, len(skipped), ", ".join(skipped[:20]))
+        if partial:
+            log.warning("Backup account %s: %s messaggi salvati con le sole intestazioni: %s",
+                        account.id, len(partial), ", ".join(partial[:20]))
         account.last_backup_error = shortfall
         account.next_backup_at = next_backup_time(account, account.last_backup_at)
         job.status = "completed"

@@ -204,6 +204,10 @@ class MicrosoftGraphAdapter:
         """Graph is stateless HTTP: a failed request leaves nothing to reconnect."""
         return bool(self.access_token)
 
+    def fetch_headers_only(self, uid: str):
+        """Graph either serves a message whole or not at all; there is no partial form to keep."""
+        return None
+
     def message_summary(self, uid: str) -> str:
         try:
             meta = graph_json(self.access_token, f"/me/messages/{uid}?$select=subject,receivedDateTime")

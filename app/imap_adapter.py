@@ -4,6 +4,7 @@ import ssl
 from dataclasses import dataclass
 from datetime import datetime
 from email.header import decode_header, make_header
+from email.utils import format_datetime
 from typing import Iterator
 
 from imapclient import IMAPClient
@@ -13,6 +14,63 @@ from .config import IMAP_TIMEOUT_SECONDS
 
 def _value(mapping: dict, name: str, default=None):
     return mapping.get(name) if name in mapping else mapping.get(name.encode(), default)
+
+
+BODY_MISSING_HEADER = "X-Emboxa-Body-Unavailable"
+BODY_MISSING_FLAG = "$EmboxaBodyUnavailable"
+
+BODY_MISSING_NOTE = (
+    "Il server di posta ha rifiutato di consegnare il corpo di questo messaggio "
+    "(\"[UNAVAILABLE] UID FETCH Server error\"), anche dopo più tentativi a distanza di tempo. "
+    "Le intestazioni qui sopra sono tutto ciò che il server ha fornito: mittente, oggetto, data e "
+    "destinatari sono quelli originali. Il contenuto non esiste più lato server, oppure è "
+    "danneggiato: nessun client di posta può scaricarlo."
+)
+
+
+def _address_header(addresses) -> str:
+    parts = []
+    for address in addresses or ():
+        mailbox, host = getattr(address, "mailbox", None), getattr(address, "host", None)
+        if not mailbox or not host:
+            continue
+        email = f"{_header_text(mailbox)}@{_header_text(host)}"
+        name = _header_text(getattr(address, "name", None))
+        parts.append(f'"{name}" <{email}>' if name else email)
+    return ", ".join(parts)
+
+
+def _headers_from_envelope(envelope) -> bytes:
+    """Rebuild the essential headers of a message from its ENVELOPE, for when BODY[HEADER] fails."""
+    lines = []
+    for name, addresses in (("From", "from_"), ("Sender", "sender"), ("Reply-To", "reply_to"),
+                            ("To", "to"), ("Cc", "cc"), ("Bcc", "bcc")):
+        value = _address_header(getattr(envelope, addresses, None))
+        if value:
+            lines.append(f"{name}: {value}")
+    date = getattr(envelope, "date", None)
+    if date:
+        lines.append(f"Date: {format_datetime(date)}")
+    subject = _header_text(getattr(envelope, "subject", None))
+    if subject:
+        lines.append(f"Subject: {subject}")
+    for name, attr in (("Message-ID", "message_id"), ("In-Reply-To", "in_reply_to")):
+        value = _header_text(getattr(envelope, attr, None))
+        if value:
+            lines.append(f"{name}: {value}")
+    return ("\r\n".join(lines) + "\r\n").encode("utf-8", "replace")
+
+
+def _stub_message(headers: bytes) -> bytes:
+    """An RFC 822 message carrying the original headers and, in place of the body, an explanation."""
+    headers = headers.rstrip(b"\r\n") + b"\r\n"
+    extra = (
+        f"{BODY_MISSING_HEADER}: yes\r\n"
+        "MIME-Version: 1.0\r\n"
+        "Content-Type: text/plain; charset=utf-8\r\n"
+        "Content-Transfer-Encoding: 8bit\r\n"
+    ).encode()
+    return headers + extra + b"\r\n" + BODY_MISSING_NOTE.encode("utf-8") + b"\r\n"
 
 
 def _header_text(value) -> str:
@@ -46,6 +104,7 @@ class RemoteMessage:
     raw: bytes
     flags: list[str]
     internal_date: datetime | None
+    body_missing: bool = False
 
 
 class StandardIMAPAdapter:
@@ -222,6 +281,44 @@ class StandardIMAPAdapter:
         if date:
             parts.append(f"del {date:%d/%m/%Y}")
         return " ".join(parts)
+
+    def fetch_headers_only(self, uid: int) -> RemoteMessage | None:
+        """Keep what the server *will* give of a message whose body it refuses, or None if nothing.
+
+        The mailbox is the owner's; a message the provider has broken is still theirs, and its
+        sender, subject, date and recipients are worth keeping even when the text is gone. Yahoo
+        refuses RFC822 on such messages but still answers BODY[HEADER], and failing that ENVELOPE,
+        so the archive gets a message with the original headers and an explanatory body, marked
+        with both a header and a flag so it can never be mistaken for the real thing.
+        """
+        if self.client is None:
+            return None
+        headers = None
+        item: dict = {}
+        try:
+            response = self.client.fetch([uid], ["BODY.PEEK[HEADER]", "FLAGS", "INTERNALDATE"])
+            item = response.get(uid, {})
+            headers = _value(item, "BODY[HEADER]")
+        except Exception:
+            pass
+        if headers is None:
+            try:
+                response = self.client.fetch([uid], ["ENVELOPE", "FLAGS", "INTERNALDATE"])
+                item = response.get(uid, {})
+            except Exception:
+                return None
+            envelope = _value(item, "ENVELOPE")
+            if envelope is None:
+                return None
+            headers = _headers_from_envelope(envelope)
+        flags = [_flag_text(flag) for flag in (_value(item, "FLAGS", ()) or ())]
+        return RemoteMessage(
+            uid=uid,
+            raw=_stub_message(bytes(headers)),
+            flags=flags + [BODY_MISSING_FLAG],
+            internal_date=_value(item, "INTERNALDATE"),
+            body_missing=True,
+        )
 
     def logout(self) -> None:
         if self.client is not None:
