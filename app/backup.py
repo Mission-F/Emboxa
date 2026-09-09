@@ -12,7 +12,7 @@ from pathlib import Path
 
 from sqlalchemy import select, text
 
-from .config import (ARCHIVES_DIR, BACKUP_BATCH_ATTEMPTS, BACKUP_RETRIES,
+from .config import (ARCHIVES_DIR, BACKUP_BATCH_ATTEMPTS, BACKUP_MESSAGE_ATTEMPTS, BACKUP_RETRIES,
                      BACKUP_RETRY_BACKOFF_SECONDS, BACKUP_RETRY_MAX_WAIT_SECONDS, IMAP_FETCH_BATCH)
 from .database import SessionLocal
 from .graph_adapter import MicrosoftGraphAdapter
@@ -131,32 +131,53 @@ def _connect_with_retry(account: Account, password: str) -> StandardIMAPAdapter 
     raise RuntimeError(f"Connessione IMAP fallita dopo {BACKUP_RETRIES} tentativi: {last_error}")
 
 
+def _describe(adapter, uid) -> str:
+    summary = ""
+    try:
+        summary = adapter.message_summary(uid)
+    except Exception:  # a diagnostic must never be the thing that breaks the backup
+        pass
+    return f" ({summary})" if summary else ""
+
+
 def _fetch_batch(adapter, account, password, folder_name, uids):
     """Download a batch of messages, returning (adapter, messages, unreachable_uids).
 
-    Providers throttle a large mailbox by answering "[UNAVAILABLE] UID FETCH Server error - Please
-    try again later". Retrying twice a second apart then aborting turned that into a failed backup
-    and threw away hours of downloading, so this retries and, if the batch still fails, halves it:
-    a single oversized or broken message can no longer take a whole folder down with it.
+    A provider can answer "[UNAVAILABLE] UID FETCH Server error - Please try again later" instead
+    of a message. It reads like throttling, but on a real 38 000-message Yahoo mailbox it came from
+    individual messages the server would never hand over, always the same UIDs run after run. So a
+    batch is not retried: it is halved until the offending message is alone, and only that message
+    gets a few patient attempts, because giving up on it actually loses something.
 
-    A whole batch only gets a few quick attempts, because waiting minutes on every hiccup of a
-    44 000-message mailbox costs more than the batch is worth. The long, patient waits are spent on
-    an individual message, where giving up actually loses something.
+    Crucially, a refusal is not a broken connection. Reconnecting after each one — which is what
+    this used to do — cost about twenty-five seconds against a folder that size, and a bisect
+    through one bad message pays it ten times over: five minutes to skip a single email. The
+    connection is asked whether it is still usable, and rebuilt only when it is not.
     """
     last_error = None
-    attempts = BACKUP_BATCH_ATTEMPTS if len(uids) > 1 else BACKUP_RETRIES
+    attempts = BACKUP_BATCH_ATTEMPTS if len(uids) > 1 else BACKUP_MESSAGE_ATTEMPTS
     for attempt in range(attempts):
         try:
             return adapter, list(adapter.fetch_messages(uids)), []
         except Exception as exc:
             last_error = exc
-            adapter.logout()
+            retrying = attempt + 1 < attempts
             wait = min(BACKUP_RETRY_BACKOFF_SECONDS * (2 ** attempt), BACKUP_RETRY_MAX_WAIT_SECONDS)
-            log.warning("Fetch di %s messaggi da %s non riuscito (tentativo %s/%s), riprovo tra %ss: %s",
-                        len(uids), folder_name, attempt + 1, attempts, wait, exc)
-            time.sleep(wait)
-            adapter = _connect_with_retry(account, password)
-            adapter.select_folder(folder_name)
+            if retrying:
+                outcome = f"riprovo tra {wait}s"
+            elif len(uids) > 1:
+                outcome = "divido il lotto"
+            else:
+                outcome = "rinuncio"
+            log.warning("Fetch di %s messaggi da %s non riuscito (tentativo %s/%s), %s: %s",
+                        len(uids), folder_name, attempt + 1, attempts, outcome, exc)
+            if not adapter.is_alive():
+                # The link really did break; rebuilding it is both the repair and the pause.
+                adapter.logout()
+                adapter = _connect_with_retry(account, password)
+                adapter.select_folder(folder_name)
+            elif retrying:
+                time.sleep(wait)
 
     if len(uids) > 1:
         middle = len(uids) // 2
@@ -164,7 +185,8 @@ def _fetch_batch(adapter, account, password, folder_name, uids):
         adapter, second, failed_second = _fetch_batch(adapter, account, password, folder_name, uids[middle:])
         return adapter, first + second, failed_first + failed_second
 
-    log.error("Messaggio UID %s irrecuperabile dalla cartella %s: %s", uids[0], folder_name, last_error)
+    log.error("Messaggio UID %s irrecuperabile dalla cartella %s%s: %s",
+              uids[0], folder_name, _describe(adapter, uids[0]), last_error)
     return adapter, [], list(uids)
 
 

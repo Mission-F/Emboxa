@@ -3,6 +3,7 @@ from __future__ import annotations
 import ssl
 from dataclasses import dataclass
 from datetime import datetime
+from email.header import decode_header, make_header
 from typing import Iterator
 
 from imapclient import IMAPClient
@@ -12,6 +13,19 @@ from .config import IMAP_TIMEOUT_SECONDS
 
 def _value(mapping: dict, name: str, default=None):
     return mapping.get(name) if name in mapping else mapping.get(name.encode(), default)
+
+
+def _header_text(value) -> str:
+    """Decode a header that may arrive as bytes, MIME-encoded words, or malformed legacy bytes."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", "replace")
+    try:
+        value = str(make_header(decode_header(str(value))))
+    except Exception:
+        value = str(value)
+    return value.encode("utf-8", "replace").decode("utf-8").strip()
 
 
 def _flag_text(flag) -> str:
@@ -160,6 +174,54 @@ class StandardIMAPAdapter:
                 flags=flags,
                 internal_date=_value(item, "INTERNALDATE"),
             )
+
+    def is_alive(self) -> bool:
+        """True when the connection can still be used for another command.
+
+        A refused FETCH does not mean the link is gone. Yahoo answers
+        ``[UNAVAILABLE] UID FETCH Server error`` on messages it cannot read and then keeps talking
+        normally, so tearing the session down and logging in again — about twenty-five seconds
+        against a 38 000-message folder — repaired nothing. NOOP asks the connection itself instead
+        of guessing from the error text, which no two providers word the same way.
+        """
+        if self.client is None:
+            return False
+        try:
+            self.client.noop()
+            return True
+        except Exception:
+            return False
+
+    def message_summary(self, uid: int) -> str:
+        """Describe a message whose body the server refuses, or "" if even that fails.
+
+        ENVELOPE is a different fetch item from RFC822, so it often survives when the body does
+        not. It is the only way to tell the owner *which* emails a provider is withholding, which
+        is what they need before emptying the mailbox those emails still live in.
+        """
+        if self.client is None:
+            return ""
+        try:
+            response = self.client.fetch([uid], ["ENVELOPE"])
+        except Exception:
+            return ""
+        envelope = _value(response.get(uid, {}), "ENVELOPE")
+        if envelope is None:
+            return ""
+        subject = _header_text(getattr(envelope, "subject", None)) or "(senza oggetto)"
+        sender = ""
+        senders = getattr(envelope, "from_", None) or ()
+        if senders:
+            mailbox, host = getattr(senders[0], "mailbox", None), getattr(senders[0], "host", None)
+            if mailbox and host:
+                sender = f"{_header_text(mailbox)}@{_header_text(host)}"
+        date = getattr(envelope, "date", None)
+        parts = [f'"{subject}"']
+        if sender:
+            parts.append(f"da {sender}")
+        if date:
+            parts.append(f"del {date:%d/%m/%Y}")
+        return " ".join(parts)
 
     def logout(self) -> None:
         if self.client is not None:

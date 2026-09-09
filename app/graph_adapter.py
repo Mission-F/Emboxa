@@ -200,6 +200,19 @@ class MicrosoftGraphAdapter:
                 internal_date=_dt(meta.get("receivedDateTime")),
             )
 
+    def is_alive(self) -> bool:
+        """Graph is stateless HTTP: a failed request leaves nothing to reconnect."""
+        return bool(self.access_token)
+
+    def message_summary(self, uid: str) -> str:
+        try:
+            meta = graph_json(self.access_token, f"/me/messages/{uid}?$select=subject,receivedDateTime")
+        except Exception:
+            return ""
+        subject = str(meta.get("subject") or "(senza oggetto)")
+        received = _dt(meta.get("receivedDateTime"))
+        return f'"{subject}" del {received:%d/%m/%Y}' if received else f'"{subject}"'
+
     def capabilities(self) -> list[str]:
         return ["MICROSOFT_GRAPH", "OAUTH2"]
 
