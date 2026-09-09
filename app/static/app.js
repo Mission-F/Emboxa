@@ -446,7 +446,10 @@ $('#test-connection').addEventListener('click', async () => {
 $('#provider-preset').addEventListener('change', event => {
   microsoftManual = false;
   syncProviderMode();
-  const presets={gmail:['imap.gmail.com',993,'ssl'],outlook:['outlook.office365.com',993,'ssl'],icloud:['imap.mail.me.com',993,'ssl'],yahoo:['imap.mail.yahoo.com',993,'ssl']};
+  // Yahoo runs two IMAP hosts: imap.mail.yahoo.com for two-way sync, which exposes only part of a
+  // large mailbox, and export.imap.mail.yahoo.com for downloading all of it. Backing up wants the
+  // second one — the first silently reported 16 313 messages for a 38 211-message inbox.
+  const presets={gmail:['imap.gmail.com',993,'ssl'],outlook:['outlook.office365.com',993,'ssl'],icloud:['imap.mail.me.com',993,'ssl'],yahoo:['export.imap.mail.yahoo.com',993,'ssl']};
   const value=presets[event.target.value]; if(value){const form=$('#account-form');form.imap_host.value=value[0];form.imap_port.value=value[1];form.security.value=value[2];}
 });
 $('#account-form').schedule_mode.addEventListener('change', event => $('#interval-label').classList.toggle('hidden',event.target.value!=='interval'));

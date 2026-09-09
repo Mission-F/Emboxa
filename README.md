@@ -102,6 +102,14 @@ Open `http://YOUR_SERVER_IP:49273`. After the first login, clear `ADMIN_PASSWORD
 
 For a public HTTPS reverse proxy, use the final `https://` URL and set `COOKIE_SECURE=true`. Port `49273` may remain private to your LAN or tunnel.
 
+### Yahoo mailboxes
+
+Use `export.imap.mail.yahoo.com` (port 993, SSL), not `imap.mail.yahoo.com`. Yahoo runs the second
+host for two-way sync and it exposes only part of a large mailbox — a 38 211-message inbox reported
+16 313 messages in total, with no error. The provider preset selects the export host automatically,
+and existing accounts are moved to it on upgrade. Yahoo's own limit is 100 000 messages per folder;
+a full first download can take hours. Generate an app password if the account uses Yahoo Account Key.
+
 ## How it works
 
 ```text

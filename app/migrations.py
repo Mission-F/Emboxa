@@ -199,6 +199,24 @@ def run_migrations() -> None:
                 conn.execute(text("ALTER TABLE folders ADD COLUMN remote_count INTEGER"))
             conn.execute(text("INSERT OR IGNORE INTO schema_migrations(version) VALUES (12)"))
 
+    if 13 not in applied:
+        # Accounts created before this fix point at Yahoo's two-way sync host, which serves only a
+        # fraction of a large mailbox and reports that fraction as the whole thing. Move them to the
+        # export host so the next backup actually sees everything; the archives already taken stay
+        # where they are, but they are incomplete and want re-running.
+        log.info("Applying database migration 13 (Yahoo export IMAP host)")
+        with engine.begin() as conn:
+            moved = conn.execute(text(
+                "UPDATE accounts SET imap_host='export.imap.mail.yahoo.com' "
+                "WHERE imap_host='imap.mail.yahoo.com'"
+            )).rowcount
+            if moved:
+                log.warning(
+                    "%s account Yahoo spostati su export.imap.mail.yahoo.com: rifai il backup, "
+                    "l'archivio precedente e' parziale", moved,
+                )
+            conn.execute(text("INSERT OR IGNORE INTO schema_migrations(version) VALUES (13)"))
+
     # Fail clearly if the Python SQLite build unexpectedly lacks FTS5.
     with engine.connect() as conn:
         if "message_fts" not in inspect(conn).get_table_names():

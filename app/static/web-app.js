@@ -50,6 +50,8 @@ const transferStatus = document.querySelector('#transfer-status');
 let transferStep = 1, transferPreviewData = null;
 const providerSettings = {
   gmail:{host:'imap.gmail.com',port:993,security:'ssl'}, outlook:{host:'outlook.office365.com',port:993,security:'ssl'},
+  // Restoring writes messages into the mailbox, so this stays on the regular sync host; the
+  // export host used for backups is the read-out side of Yahoo.
   yahoo:{host:'imap.mail.yahoo.com',port:993,security:'ssl'}, icloud:{host:'imap.mail.me.com',port:993,security:'ssl'}, custom:{host:'',port:993,security:'ssl'}
 };
 
