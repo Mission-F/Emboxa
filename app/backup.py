@@ -12,7 +12,8 @@ from pathlib import Path
 
 from sqlalchemy import select, text
 
-from .config import ARCHIVES_DIR, BACKUP_RETRIES, IMAP_FETCH_BATCH
+from .config import (ARCHIVES_DIR, BACKUP_RETRIES, BACKUP_RETRY_BACKOFF_SECONDS,
+                     BACKUP_RETRY_MAX_WAIT_SECONDS, IMAP_FETCH_BATCH)
 from .database import SessionLocal
 from .graph_adapter import MicrosoftGraphAdapter
 from .imap_adapter import StandardIMAPAdapter
@@ -130,6 +131,38 @@ def _connect_with_retry(account: Account, password: str) -> StandardIMAPAdapter 
     raise RuntimeError(f"Connessione IMAP fallita dopo {BACKUP_RETRIES} tentativi: {last_error}")
 
 
+def _fetch_batch(adapter, account, password, folder_name, uids):
+    """Download a batch of messages, returning (adapter, messages, unreachable_uids).
+
+    Providers throttle a large mailbox by answering "[UNAVAILABLE] UID FETCH Server error - Please
+    try again later". Retrying twice a second apart then aborting turned that into a failed backup
+    and threw away hours of downloading, so this waits properly, and if the batch still fails it
+    halves it: a single oversized or broken message can no longer take a whole folder down with it.
+    """
+    last_error = None
+    for attempt in range(BACKUP_RETRIES):
+        try:
+            return adapter, list(adapter.fetch_messages(uids)), []
+        except Exception as exc:
+            last_error = exc
+            adapter.logout()
+            wait = min(BACKUP_RETRY_BACKOFF_SECONDS * (2 ** attempt), BACKUP_RETRY_MAX_WAIT_SECONDS)
+            log.warning("Fetch di %s messaggi da %s non riuscito (tentativo %s/%s), riprovo tra %ss: %s",
+                        len(uids), folder_name, attempt + 1, BACKUP_RETRIES, wait, exc)
+            time.sleep(wait)
+            adapter = _connect_with_retry(account, password)
+            adapter.select_folder(folder_name)
+
+    if len(uids) > 1:
+        middle = len(uids) // 2
+        adapter, first, failed_first = _fetch_batch(adapter, account, password, folder_name, uids[:middle])
+        adapter, second, failed_second = _fetch_batch(adapter, account, password, folder_name, uids[middle:])
+        return adapter, first + second, failed_first + failed_second
+
+    log.error("Messaggio UID %s irrecuperabile dalla cartella %s: %s", uids[0], folder_name, last_error)
+    return adapter, [], list(uids)
+
+
 def run_backup(job_id: int) -> None:
     db = SessionLocal()
     adapter: StandardIMAPAdapter | MicrosoftGraphAdapter | None = None
@@ -183,6 +216,7 @@ def run_backup(job_id: int) -> None:
 
         processed = 0
         attachment_count = 0
+        skipped: list[str] = []
         folder_counts: dict[str, int] = {}
         started_monotonic = time.monotonic()
         smoothed_rate = 0.0
@@ -217,21 +251,9 @@ def run_backup(job_id: int) -> None:
             for offset in range(0, len(uids), IMAP_FETCH_BATCH):
                 _check_cancel(db, job)
                 uid_batch = uids[offset:offset + IMAP_FETCH_BATCH]
-                last_error = None
-                for attempt in range(BACKUP_RETRIES):
-                    try:
-                        remote_messages = list(adapter.fetch_messages(uid_batch))
-                        last_error = None
-                        break
-                    except Exception as exc:
-                        last_error = exc
-                        adapter.logout()
-                        if attempt + 1 < BACKUP_RETRIES:
-                            time.sleep(min(2 ** attempt, 8))
-                            adapter = _connect_with_retry(account, password)
-                            adapter.select_folder(remote.name)
-                if last_error is not None:
-                    raise RuntimeError(f"Fetch IMAP fallito nella cartella {remote.name}: {last_error}")
+                adapter, remote_messages, unreachable = _fetch_batch(
+                    adapter, account, password, remote.name, uid_batch)
+                skipped.extend(f"{remote.name}:{uid}" for uid in unreachable)
 
                 for remote_message in remote_messages:
                     parsed = parse_and_store(remote_message.raw, stage_path)
@@ -348,9 +370,16 @@ def run_backup(job_id: int) -> None:
         account.archive_size = archive_size
         account.last_backup_at = utcnow()
         account.last_backup_status = "completed"
-        account.last_backup_error = None
+        # Finished, but say so plainly if the provider refused some messages: this archive is the
+        # thing people check before deleting the original mailbox.
+        shortfall = f"{len(skipped)} messaggi non scaricati dal server" if skipped else None
+        if skipped:
+            log.error("Backup account %s completato con %s messaggi mancanti: %s",
+                      account.id, len(skipped), ", ".join(skipped[:20]))
+        account.last_backup_error = shortfall
         account.next_backup_at = next_backup_time(account, account.last_backup_at)
         job.status = "completed"
+        job.error = shortfall or ""
         job.current_folder = None
         job.processed_messages = processed
         job.total_messages = max(total, processed)
