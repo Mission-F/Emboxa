@@ -26,10 +26,11 @@ BACKUP_RETRIES = max(1, int(os.getenv("BACKUP_RETRIES", "5")))
 # split, and only a single message earns the patient, growing waits.
 BACKUP_RETRY_BACKOFF_SECONDS = max(1, int(os.getenv("BACKUP_RETRY_BACKOFF_SECONDS", "1")))
 BACKUP_BATCH_ATTEMPTS = max(1, int(os.getenv("BACKUP_BATCH_ATTEMPTS", "1")))
-# Nor did the patient waits on a single message ever pay off: two full Yahoo runs produced ten
-# such sequences and not one recovered on attempt two, three, four or five. Three attempts keep
-# a genuinely transient hiccup covered without spending half a minute proving the obvious.
-BACKUP_MESSAGE_ATTEMPTS = max(1, int(os.getenv("BACKUP_MESSAGE_ATTEMPTS", "3")))
+# Nor did the patient waits on a single message ever pay off: three full Yahoo runs, a dozen
+# retry sequences, not one recovery — and every refusal costs about six seconds before the
+# server even answers. So a refused message is asked for once, and the folder loop offers it
+# one more chance minutes later, once the rest of the folder is in.
+BACKUP_MESSAGE_ATTEMPTS = max(1, int(os.getenv("BACKUP_MESSAGE_ATTEMPTS", "1")))
 BACKUP_RETRY_MAX_WAIT_SECONDS = max(1, int(os.getenv("BACKUP_RETRY_MAX_WAIT_SECONDS", "120")))
 BACKUP_ANOMALY_THRESHOLD = min(0.9, max(0.05, float(os.getenv("BACKUP_ANOMALY_THRESHOLD", "0.20"))))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()

@@ -131,6 +131,39 @@ def _connect_with_retry(account: Account, password: str) -> StandardIMAPAdapter 
     raise RuntimeError(f"Connessione IMAP fallita dopo {BACKUP_RETRIES} tentativi: {last_error}")
 
 
+class _FolderQueue:
+    """The batches of a folder, then — once — every message refused along the way.
+
+    A retry a second after a refusal never once worked in three Yahoo runs; one minutes later,
+    after the rest of the folder has come in, is a real second chance and costs nothing until then.
+    """
+
+    def __init__(self, uids, batch_size):
+        self.pending = [uids[offset:offset + batch_size] for offset in range(0, len(uids), batch_size)]
+        self._deferred: list | None = []  # None once the second pass has begun
+        self.second_pass_started = False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        self.second_pass_started = False
+        if not self.pending and self._deferred:
+            self.pending = [[uid] for uid in self._deferred]
+            self._deferred = None
+            self.second_pass_started = True
+        if not self.pending:
+            raise StopIteration
+        return self.pending.pop(0)
+
+    def refused(self, uids) -> list:
+        """Record refused messages; returns the ones that are now final."""
+        if self._deferred is None:
+            return list(uids)
+        self._deferred.extend(uids)
+        return []
+
+
 def _describe(adapter, uid) -> str:
     summary = ""
     try:
@@ -145,14 +178,19 @@ def _fetch_batch(adapter, account, password, folder_name, uids):
 
     A provider can answer "[UNAVAILABLE] UID FETCH Server error - Please try again later" instead
     of a message. It reads like throttling, but on a real 38 000-message Yahoo mailbox it came from
-    individual messages the server would never hand over, always the same UIDs run after run. So a
-    batch is not retried: it is halved until the offending message is alone, and only that message
-    gets a few patient attempts, because giving up on it actually loses something.
+    individual messages the server would never hand over — the same UIDs run after run, and across
+    three runs not one retry a second later ever succeeded. Every refusal also costs about six
+    seconds before Yahoo answers at all, so the aim is simply to be refused as few times as possible.
 
-    Crucially, a refusal is not a broken connection. Reconnecting after each one — which is what
-    this used to do — cost about twenty-five seconds against a folder that size, and a bisect
-    through one bad message pays it ten times over: five minutes to skip a single email. The
-    connection is asked whether it is still usable, and rebuilt only when it is not.
+    That rules out both retrying a batch and bisecting it. Halving a batch of twenty with one bad
+    message inside is refused five times on the way down; asking for the twenty messages one by one
+    is refused once. Bad messages also arrive in bursts (a spam run with broken bodies), and a burst
+    costs one refusal per message either way — but bisecting pays for the shared levels too.
+
+    A refusal is not a broken connection either: Yahoo keeps talking normally afterwards, so the
+    session is rebuilt only when a NOOP says it is actually gone. The message itself is given up
+    on quickly here; the folder loop offers it a second chance once, minutes later, when a genuinely
+    transient hiccup has had time to pass.
     """
     last_error = None
     attempts = BACKUP_BATCH_ATTEMPTS if len(uids) > 1 else BACKUP_MESSAGE_ATTEMPTS
@@ -166,7 +204,7 @@ def _fetch_batch(adapter, account, password, folder_name, uids):
             if retrying:
                 outcome = f"riprovo tra {wait}s"
             elif len(uids) > 1:
-                outcome = "divido il lotto"
+                outcome = "li scarico uno alla volta"
             else:
                 outcome = "rinuncio"
             log.warning("Fetch di %s messaggi da %s non riuscito (tentativo %s/%s), %s: %s",
@@ -180,12 +218,14 @@ def _fetch_batch(adapter, account, password, folder_name, uids):
                 time.sleep(wait)
 
     if len(uids) > 1:
-        middle = len(uids) // 2
-        adapter, first, failed_first = _fetch_batch(adapter, account, password, folder_name, uids[:middle])
-        adapter, second, failed_second = _fetch_batch(adapter, account, password, folder_name, uids[middle:])
-        return adapter, first + second, failed_first + failed_second
+        messages, unreachable = [], []
+        for uid in uids:
+            adapter, fetched, failed = _fetch_batch(adapter, account, password, folder_name, [uid])
+            messages.extend(fetched)
+            unreachable.extend(failed)
+        return adapter, messages, unreachable
 
-    log.error("Messaggio UID %s irrecuperabile dalla cartella %s%s: %s",
+    log.error("Messaggio UID %s rifiutato dalla cartella %s%s: %s",
               uids[0], folder_name, _describe(adapter, uids[0]), last_error)
     return adapter, [], list(uids)
 
@@ -275,12 +315,18 @@ def run_backup(job_id: int) -> None:
                 )
             log.info("Backup account %s, cartella %s (%s messaggi su %s)", account.id, remote.name, len(uids), exists)
 
-            for offset in range(0, len(uids), IMAP_FETCH_BATCH):
+            queue = _FolderQueue(uids, IMAP_FETCH_BATCH)
+            for uid_batch in queue:
                 _check_cancel(db, job)
-                uid_batch = uids[offset:offset + IMAP_FETCH_BATCH]
                 adapter, remote_messages, unreachable = _fetch_batch(
                     adapter, account, password, remote.name, uid_batch)
-                skipped.extend(f"{remote.name}:{uid}" for uid in unreachable)
+                for uid in queue.refused(unreachable):
+                    skipped.append(f"{remote.name}:{uid}")
+                    log.error("Messaggio UID %s definitivamente non scaricato dalla cartella %s",
+                              uid, remote.name)
+                if queue.second_pass_started:
+                    log.info("Backup account %s, cartella %s: riprovo %s messaggi rifiutati",
+                             account.id, remote.name, len(queue.pending) + 1)
 
                 for remote_message in remote_messages:
                     parsed = parse_and_store(remote_message.raw, stage_path)

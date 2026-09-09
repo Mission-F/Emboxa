@@ -58,7 +58,7 @@ def _no_waiting(monkeypatch, adapter):
     monkeypatch.setattr(backup, "_connect_with_retry", lambda _account, _password: adapter.reconnect())
 
 
-def test_a_refused_batch_is_split_rather_than_retried(monkeypatch):
+def test_a_refused_batch_is_fetched_one_message_at_a_time(monkeypatch):
     adapter = FlakyAdapter(failing_uids=[7])
     _no_waiting(monkeypatch, adapter)
 
@@ -66,9 +66,9 @@ def test_a_refused_batch_is_split_rather_than_retried(monkeypatch):
 
     assert unreachable == [7]
     assert sorted(messages) == ["msg-1", "msg-2", "msg-8"], "the healthy messages still arrive"
-    # 4 -> 2+2 -> the bad half becomes 1+1. Retrying the four-message batch first would only have
-    # repeated a refusal the server was never going to withdraw.
-    assert adapter.batch_sizes[:2] == [4, 2], "it splits straight after the first refusal"
+    # Every refusal costs about six seconds before Yahoo answers. Halving the batch would be
+    # refused again at each level on the way down; asking one by one is refused exactly once more.
+    assert adapter.batch_sizes == [4, 1, 1, 1, 1]
 
 
 def test_a_live_connection_is_not_torn_down_after_a_refusal(monkeypatch):
@@ -91,23 +91,44 @@ def test_a_dropped_connection_is_rebuilt(monkeypatch):
     adapter = FlakyAdapter(failing_uids=[1], fail_times=1, drops_connection=True)
     _no_waiting(monkeypatch, adapter)
 
-    _result, messages, unreachable = backup._fetch_batch(adapter, None, "pw", "Archive", [1])
+    _result, messages, unreachable = backup._fetch_batch(adapter, None, "pw", "Archive", [1, 2])
 
     assert unreachable == []
-    assert messages == ["msg-1"], "the message arrives once the link is back"
+    assert sorted(messages) == ["msg-1", "msg-2"], "both messages arrive once the link is back"
     assert adapter.connects == 1
     assert adapter.selected == ["Archive"], "the folder has to be reselected on the new connection"
 
 
-def test_a_single_message_is_retried_patiently(monkeypatch):
-    adapter = FlakyAdapter(failing_uids=[3], fail_times=2)
+def test_a_refused_message_is_not_retried_on_the_spot(monkeypatch):
+    """Three runs, a dozen retry sequences, zero recoveries: the second chance comes later instead."""
+    adapter = FlakyAdapter(failing_uids=[3], fail_times=1)
     _no_waiting(monkeypatch, adapter)
 
     _result, messages, unreachable = backup._fetch_batch(adapter, None, "pw", "Inbox", [3])
 
-    assert unreachable == []
-    assert messages == ["msg-3"], "a lone message gets the waits, since giving up loses it"
-    assert adapter.attempts == 3
+    assert unreachable == [3]
+    assert adapter.attempts == 1
+
+
+def test_the_folder_offers_refused_messages_a_second_chance_at_the_end():
+    queue = backup._FolderQueue([1, 2, 3, 4, 5], batch_size=2)
+
+    assert next(queue) == [1, 2]
+    assert queue.refused([2]) == [], "not final yet: the folder is still being read"
+    assert next(queue) == [3, 4]
+    assert next(queue) == [5]
+    assert queue.refused([5]) == []
+    assert next(queue) == [2], "the refused messages come back, one at a time"
+    assert queue.second_pass_started
+    assert queue.refused([]) == [], "recovered on the second pass"
+    assert next(queue) == [5]
+    assert queue.refused([5]) == [5], "refused twice, minutes apart: that one is lost"
+    assert list(queue) == []
+
+
+def test_a_clean_folder_has_no_second_pass():
+    queue = backup._FolderQueue([1, 2, 3], batch_size=2)
+    assert list(queue) == [[1, 2], [3]]
 
 
 def test_healthy_batch_is_fetched_once(monkeypatch):
