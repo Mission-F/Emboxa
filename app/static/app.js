@@ -643,12 +643,19 @@ $('#versions-dialog').addEventListener('click',async event=>{const button=event.
 
 const processIcons={backup:'inbox',transfer:'transfer',import:'upload',maintenance:'trash'};
 function processStageLabel(status){ return ({queued:t('queuedState'),running:t('runningState'),cancelling:t('cancellingState')})[status]; }
+/* A long backup spends its first minutes under 1%, and a bare "0%" next to "150 / 16.313" looks
+   like nothing is moving. Fall back to the exact fraction while it rounds to zero. */
+function processPercent(item){
+  if(item.percent>0||!item.total||!item.processed)return `${item.percent}%`;
+  const exact=item.processed*100/item.total;
+  return exact>0?`${exact.toFixed(1)}%`:'0%';
+}
 function processCard(item){
   const metrics=[];
   if(item.total!=null)metrics.push(`<span>${numberFmt(item.processed||0)} / ${numberFmt(item.total)} ${t('messagesUnit')}</span>`);
   if(item.eta_seconds!=null&&item.status==='running')metrics.push(`<span>ETA ${duration(item.eta_seconds)}</span>`);
   return `<article class="activity-job ${item.status}">
-    <div class="activity-state"><span class="activity-kind">${icon(processIcons[item.kind]||'file')}<b>${esc(processStageLabel(item.status)||item.status.toUpperCase())}</b></span><span>${item.percent}%</span></div>
+    <div class="activity-state"><span class="activity-kind">${icon(processIcons[item.kind]||'file')}<b>${esc(processStageLabel(item.status)||item.status.toUpperCase())}</b></span><span>${processPercent(item)}</span></div>
     <h3>${esc(item.label)}</h3><p>${esc(item.detail||'')}</p>
     <div class="progress"><i data-progress="${item.percent}"></i></div>
     ${metrics.length?`<div class="activity-metrics">${metrics.join('')}</div>`:''}
