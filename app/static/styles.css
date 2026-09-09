@@ -271,10 +271,17 @@ a { color: var(--accent-strong); }
 .folder-item.active b { font-weight: 750; }
 .folder-item em { color: var(--text-tertiary); font-size: var(--fs-label); font-style: normal; font-weight: 700; font-variant-numeric: tabular-nums; }
 .archive-stats { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: var(--s-5) var(--s-1) 0; padding-top: var(--s-3); border-top: 1px solid var(--border); color: var(--text-tertiary); font-size: var(--fs-label); font-weight: 650; }
+/* The span of dates the archive actually covers: the fastest answer to "did it get everything?". */
+.archive-range { flex-basis: 100%; margin-top: 2px; line-height: 1.5; }
+.archive-range b { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 
 .message-column { min-width: 0; min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--surface); }
-.list-toolbar { min-height: 52px; display: flex; align-items: center; padding: 0 var(--s-4); border-bottom: 1px solid var(--border); }
-.list-toolbar > div { width: 100%; display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.list-toolbar { min-height: 52px; display: flex; align-items: center; gap: var(--s-3); padding: 0 var(--s-4); border-bottom: 1px solid var(--border); }
+.list-toolbar > div { min-width: 0; flex: 1; display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+/* Sorting lives here rather than inside the filters dialog: checking whether an archive really
+   goes back to the oldest message is a two-click job, not an advanced search. */
+.sort-select { min-height: 32px; flex: 0 0 auto; max-width: 148px; padding: 4px 26px 4px 9px; border-radius: var(--r-sm); background-color: var(--surface-secondary); background-position: right 7px center; background-size: 14px; color: var(--text-secondary); font-size: var(--fs-micro); font-weight: 700; }
+.sort-select:hover { color: var(--heading); }
 .list-toolbar strong { color: var(--heading); font-size: var(--fs-h3); font-weight: 750; letter-spacing: var(--tracking-tight); }
 .list-toolbar span { color: var(--text-tertiary); font-size: var(--fs-micro); font-variant-numeric: tabular-nums; }
 .message-list { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }

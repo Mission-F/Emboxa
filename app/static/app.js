@@ -1,5 +1,5 @@
 const csrf = document.querySelector('meta[name="csrf-token"]').content;
-const state = {accounts: [], account: null, folders: [], versions: [], snapshotId: null, folderId: null, trash: false, deletedCount: 0, archiveView: 'messages', page: 1, pageSize: 50, total: 0, filters: {}, polling: null, openAccountMenuId: null, attachments: {page:1,pageSize:60,total:0,mode:'grid',category:'all',q:''}};
+const state = {accounts: [], account: null, folders: [], versions: [], snapshotId: null, folderId: null, trash: false, deletedCount: 0, archiveView: 'messages', page: 1, pageSize: 50, total: 0, sort: 'date_desc', filters: {}, polling: null, openAccountMenuId: null, attachments: {page:1,pageSize:60,total:0,mode:'grid',category:'all',q:''}};
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const esc = (value = '') => String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
@@ -110,6 +110,7 @@ function senderName(value) {
 }
 function senderInitial(value) { const name = senderName(value); return (name.match(/[\p{L}\p{N}]/u) || ['?'])[0].toUpperCase(); }
 
+function dateOnly(value) { return value ? new Intl.DateTimeFormat(uiLocale(),{dateStyle:'medium'}).format(new Date(value)) : '—'; }
 function statusTone(value) { return ({completed:'success',imported:'success',running:'accent running',failed:'danger',cancelled:'warning',cleared:'warning',disconnected:'danger'})[value] || ''; }
 function statusLabel(value) { return ({never:t('statusNever'),running:t('statusRunning'),completed:t('statusCompleted'),failed:t('statusFailed'),cancelled:t('statusCancelled'),imported:t('statusImported'),cleared:t('statusCleared'),disconnected:t('statusDisconnected')})[value] || value; }
 function duration(seconds) { if (seconds == null) return t('estimating'); const n=Math.max(0,Number(seconds)); if(n<60)return `~${Math.max(1,Math.round(n/5)*5)} sec`;if(n<3600)return `~${Math.round(n/60)} min`;const h=Math.floor(n/3600),m=Math.round((n%3600)/300)*5;return `~${h} h${m?` ${m} min`:''}`; }
@@ -416,7 +417,7 @@ function folderIcon(folder) {
   return 'folder';
 }
 async function openArchive(account) {
-  state.account=account; state.folderId=null; state.trash=false; state.archiveView='messages'; state.page=1; state.filters={};
+  state.account=account; state.folderId=null; state.trash=false; state.archiveView='messages'; state.page=1; state.filters={}; state.sort='date_desc'; $('#sort-select').value=state.sort;
   $('#dashboard').classList.add('hidden'); $('#archive').classList.remove('hidden'); $('#search-wrap').classList.remove('hidden');
   $('#archive-name').textContent=account.display_name; $('#archive-email').textContent=account.email; $('#archive-avatar').textContent=account.display_name.charAt(0).toUpperCase(); $('#reader').innerHTML=emptyReader();
   $('#mobile-mailbox-label').textContent=account.display_name; $('#mobile-mailbox-label').classList.remove('hidden');
@@ -435,15 +436,15 @@ function renderFolders(){
   $('#folder-list').innerHTML=`<button class="folder-item ${!state.trash&&state.folderId===null?'active':''}" data-folder="">${icon('mail')}<b>${t('allMessages')}</b><em>${numberFmt(state.account.message_count)}</em></button>`+state.folders.map(folder=>`<button class="folder-item depth-${folderDepth(folder.name)} ${!state.trash&&state.folderId===folder.id?'active':''}" data-folder="${folder.id}" title="${esc(folder.name)}">${icon(folderIcon(folder))}<b>${esc(folderLeaf(folder.name))}</b><em>${numberFmt(folder.message_count)}</em></button>`).join('')+`<button class="folder-item ${state.trash?'active':''}" data-folder="trash">${icon('trash')}<b>${t('trashFolder')}</b><em>${numberFmt(state.deletedCount)}</em></button>`;
 }
 $('#folder-list').addEventListener('click',event=>{const button=event.target.closest('[data-folder]');if(!button)return;state.trash=button.dataset.folder==='trash';state.folderId=!state.trash&&button.dataset.folder?Number(button.dataset.folder):null;state.page=1;renderFolders();showArchiveView('messages');loadMessages();$('#folder-sidebar').classList.remove('open');});
-async function loadStats(){try{const stats=await api(`/api/accounts/${state.account.id}/stats?${snapshotParam()}`);state.deletedCount=stats.deleted||0;$('#archive-stats').innerHTML=`<span>${stats.folders} ${stats.folders===1?t('folderSingular'):t('folderPlural')}</span><span>${stats.attachments} ${stats.attachments===1?t('attachmentSingular'):t('attachmentPlural')}</span><span>${bytes(stats.archive_size)}</span>`;renderFolders();}catch(error){toast(error.message,'error');}}
-function queryString(){const params=new URLSearchParams({page:state.page,page_size:state.pageSize,snapshot_id:state.snapshotId,trash:state.trash,...state.filters});if(state.folderId)params.set('folder_id',state.folderId);const search=$('#search-input').value.trim();if(search)params.set('q',search);return params;}
+async function loadStats(){try{const stats=await api(`/api/accounts/${state.account.id}/stats?${snapshotParam()}`);state.deletedCount=stats.deleted||0;const span=stats.oldest&&stats.newest?`<span class="archive-range">${t('coverageFrom')} <b>${dateOnly(stats.oldest)}</b> ${t('coverageTo')} <b>${dateOnly(stats.newest)}</b></span>`:'';$('#archive-stats').innerHTML=`<span>${numberFmt(stats.messages)} ${t('messagesUnit')}</span><span>${stats.folders} ${stats.folders===1?t('folderSingular'):t('folderPlural')}</span><span>${stats.attachments} ${stats.attachments===1?t('attachmentSingular'):t('attachmentPlural')}</span><span>${bytes(stats.archive_size)}</span>${span}`;renderFolders();}catch(error){toast(error.message,'error');}}
+function queryString(){const params=new URLSearchParams({page:state.page,page_size:state.pageSize,snapshot_id:state.snapshotId,trash:state.trash,sort:state.sort,...state.filters});if(state.folderId)params.set('folder_id',state.folderId);const search=$('#search-input').value.trim();if(search)params.set('q',search);return params;}
 async function loadMessages(){
   $('#message-list').innerHTML=skeleton();
   try {
     const data=await api(`/api/accounts/${state.account.id}/messages?${queryString()}`); state.total=data.total;
     $('#result-count').textContent=`${numberFmt(data.total)} ${t('results')}`; $('#list-title').textContent=state.trash?t('trashFolder'):state.folderId?(state.folders.find(folder=>folder.id===state.folderId)?.name||t('folderSingular')):t('allMessages');
     $('#message-list').innerHTML=data.items.length?data.items.map(message=>`<button class="message-row ${message.is_read?'':'unread'}" data-message="${message.id}" title="${esc(message.sender||'')}"><span class="row-avatar" aria-hidden="true">${esc(senderInitial(message.sender))}</span><span class="message-main"><span class="message-line"><strong>${esc(senderName(message.sender)||t('unknownSender'))}</strong><time>${date(message.date)}</time></span><span class="message-subject">${esc(message.subject)||t('noSubject')}</span><span class="snippet">${esc(message.snippet)}</span></span><span class="row-marks">${message.has_attachments?icon('paperclip'):''}<span class="star ${message.is_starred?'active':''}">${icon('star')}</span></span></button>`).join(''):`<div class="empty-list">${icon('mail')}<p>${t('noSearchResults')}</p></div>`;
-    const pages=Math.max(1,Math.ceil(data.total/state.pageSize));$('#page-label').textContent=`${state.page} ${t('pageOfSeparator')} ${pages}`;$('#prev-page').disabled=state.page<=1;$('#next-page').disabled=state.page>=pages;
+    const pages=Math.max(1,Math.ceil(data.total/state.pageSize));state.pages=pages;$('#page-label').textContent=`${state.page} ${t('pageOfSeparator')} ${pages}`;$('#prev-page').disabled=$('#first-page').disabled=state.page<=1;$('#next-page').disabled=$('#last-page').disabled=state.page>=pages;
   } catch(error){$('#message-list').innerHTML=`<div class="empty-list error">${esc(error.message)}</div>`;}
 }
 $('#message-list').addEventListener('click',async event=>{const row=event.target.closest('[data-message]');if(!row)return;$$('.message-row').forEach(item=>item.classList.remove('selected'));row.classList.add('selected');await readThread(Number(row.dataset.message));});
@@ -474,6 +475,9 @@ $('#reader').addEventListener('click',async event=>{
 });
 let searchTimer;$('#search-input').addEventListener('input',()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>{state.page=1;loadMessages();},350)});
 $('#prev-page').addEventListener('click',()=>{if(state.page>1){state.page--;loadMessages();}});$('#next-page').addEventListener('click',()=>{if(state.page*state.pageSize<state.total){state.page++;loadMessages();}});
+$('#first-page').addEventListener('click',()=>{if(state.page>1){state.page=1;loadMessages();}});
+$('#last-page').addEventListener('click',()=>{const pages=Math.max(1,Math.ceil(state.total/state.pageSize));if(state.page<pages){state.page=pages;loadMessages();}});
+$('#sort-select').addEventListener('change',event=>{state.sort=event.target.value;state.page=1;loadMessages();});
 $('#filters-button').addEventListener('click',()=>$('#filters-dialog').showModal());
 $('#filters-form').addEventListener('submit',event=>{event.preventDefault();const raw=Object.fromEntries(new FormData(event.currentTarget));state.filters=Object.fromEntries(Object.entries(raw).filter(([,value])=>value));state.page=1;$('#filters-button').classList.toggle('active',Object.keys(state.filters).length>0);$('#filters-dialog').close();loadMessages();});
 $('#clear-filters').addEventListener('click',()=>{$('#filters-form').reset();state.filters={};state.page=1;$('#filters-button').classList.remove('active');$('#filters-dialog').close();loadMessages();});
@@ -886,6 +890,7 @@ function refreshLocalizedViews(){
   if (state.account) {
     renderVersions();
     renderFolders();
+    loadStats();
     if (state.archiveView === 'attachments') loadAttachments(); else loadMessages();
   } else if (state.accounts.length) {
     renderAccounts();

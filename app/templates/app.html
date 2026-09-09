@@ -79,11 +79,13 @@
       <nav id="folder-list" class="folder-list" aria-label="Cartelle email"></nav><div id="archive-stats" class="archive-stats"></div>
     </aside>
     <section class="message-column">
-      <div class="list-toolbar"><div><strong id="list-title" data-i18n="allMessages">Tutti i messaggi</strong><span id="result-count" class="muted"></span></div></div>
+      <div class="list-toolbar"><div><strong id="list-title" data-i18n="allMessages">Tutti i messaggi</strong><span id="result-count" class="muted"></span></div><select id="sort-select" class="sort-select" data-i18n-aria-label="sortLabel" aria-label="Ordina"><option value="date_desc" data-i18n="newestFirst">Più recenti</option><option value="date_asc" data-i18n="oldestFirst">Meno recenti</option><option value="sender" data-i18n="sender">Mittente</option><option value="subject" data-i18n="subject">Oggetto</option></select></div>
       <div id="message-list" class="message-list" aria-live="polite"></div>
       <div class="pagination">
+        <button id="first-page" class="icon-button bordered" type="button" data-i18n-aria-label="firstPage" aria-label="Prima pagina" data-i18n-title="firstPage" title="Prima pagina"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m17 18-6-6 6-6M8 6v12"/></svg></button>
         <button id="prev-page" class="icon-button bordered" type="button" data-i18n-aria-label="prevPage" aria-label="Pagina precedente"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></button><span id="page-label"></span>
         <button id="next-page" class="icon-button bordered" type="button" data-i18n-aria-label="nextPage" aria-label="Pagina successiva"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
+        <button id="last-page" class="icon-button bordered" type="button" data-i18n-aria-label="lastPage" aria-label="Ultima pagina" data-i18n-title="lastPage" title="Ultima pagina"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 6 6 6-6 6M16 6v12"/></svg></button>
       </div>
     </section>
     <article id="reader" class="reader">
@@ -135,7 +137,7 @@
         <label><span data-i18n="attachmentsFilterLabel">Allegati</span><select name="has_attachments"><option value="" data-i18n="anyOption">Qualsiasi</option><option value="true" data-i18n="present">Presenti</option><option value="false" data-i18n="absent">Assenti</option></select></label>
         <label><span data-i18n="status">Stato</span><select name="is_read"><option value="" data-i18n="anyOption">Qualsiasi</option><option value="false" data-i18n="unread">Non letta</option><option value="true" data-i18n="read">Letta</option></select></label>
         <label><span data-i18n="starredLabel">Contrassegno</span><select name="is_starred"><option value="" data-i18n="anyOption">Qualsiasi</option><option value="true" data-i18n="starred">Contrassegnata</option><option value="false" data-i18n="notStarred">Non contrassegnata</option></select></label>
-        <label><span data-i18n="sortLabel">Ordina</span><select name="sort"><option value="date_desc" data-i18n="newestFirst">Più recenti</option><option value="date_asc" data-i18n="oldestFirst">Meno recenti</option><option value="sender" data-i18n="sender">Mittente</option><option value="subject" data-i18n="subject">Oggetto</option></select></label>
+        
       </div>
       <div class="dialog-actions"><button id="clear-filters" type="button" class="ghost" data-i18n="clearFilters">Azzera filtri</button><span class="grow"></span><button type="submit" class="primary" data-i18n="applyFilters">Applica filtri</button></div>
     </form>
