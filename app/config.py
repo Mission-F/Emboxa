@@ -31,6 +31,10 @@ BACKUP_BATCH_ATTEMPTS = max(1, int(os.getenv("BACKUP_BATCH_ATTEMPTS", "1")))
 # server even answers. So a refused message is asked for once, and the folder loop offers it
 # one more chance minutes later, once the rest of the folder is in.
 BACKUP_MESSAGE_ATTEMPTS = max(1, int(os.getenv("BACKUP_MESSAGE_ATTEMPTS", "1")))
+# A single Yahoo IMAP session tops out around 16 Mbit/s and averaged 6 on a real mailbox, which
+# for 40 GB of Inbox is a day of downloading. Several sessions each fetch different batches;
+# parsing and storage stay on one thread. Yahoo and Gmail both allow a handful of sessions.
+BACKUP_CONNECTIONS = max(1, min(8, int(os.getenv("BACKUP_CONNECTIONS", "4"))))
 BACKUP_RETRY_MAX_WAIT_SECONDS = max(1, int(os.getenv("BACKUP_RETRY_MAX_WAIT_SECONDS", "120")))
 BACKUP_ANOMALY_THRESHOLD = min(0.9, max(0.05, float(os.getenv("BACKUP_ANOMALY_THRESHOLD", "0.20"))))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()

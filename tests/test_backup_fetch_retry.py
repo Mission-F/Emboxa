@@ -50,6 +50,11 @@ class FlakyAdapter:
 
     def select_folder(self, name):
         self.selected.append(name)
+        return "1", 0
+
+    def fetch_headers_only(self, uid):
+        from app.imap_adapter import RemoteMessage
+        return RemoteMessage(uid=uid, raw=b"Subject: x\r\n\r\n", flags=[], internal_date=None, body_missing=True)
 
 
 def _no_waiting(monkeypatch, adapter):
@@ -110,25 +115,75 @@ def test_a_refused_message_is_not_retried_on_the_spot(monkeypatch):
     assert adapter.attempts == 1
 
 
-def test_the_folder_offers_refused_messages_a_second_chance_at_the_end():
-    queue = backup._FolderQueue([1, 2, 3, 4, 5], batch_size=2)
+def test_results_are_handled_on_the_calling_thread_as_they_land():
+    """Only the waiting on the network is spread out; the database session stays on one thread."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
 
-    assert next(queue) == [1, 2]
-    assert queue.refused([2]) == [], "not final yet: the folder is still being read"
-    assert next(queue) == [3, 4]
-    assert next(queue) == [5]
-    assert queue.refused([5]) == []
-    assert next(queue) == [2], "the refused messages come back, one at a time"
-    assert queue.second_pass_started
-    assert queue.refused([]) == [], "recovered on the second pass"
-    assert next(queue) == [5]
-    assert queue.refused([5]) == [5], "refused twice, minutes apart: that one is lost"
-    assert list(queue) == []
+    handled, threads = [], set()
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        backup._fetch_in_parallel(
+            executor, 3, [[1], [2], [3], [4], [5]],
+            lambda batch: (batch, threading.current_thread().name),
+            lambda result: (handled.append(result[0]), threads.add(threading.current_thread())),
+        )
+
+    assert sorted(handled) == [[1], [2], [3], [4], [5]]
+    assert threads == {threading.main_thread()}
 
 
-def test_a_clean_folder_has_no_second_pass():
-    queue = backup._FolderQueue([1, 2, 3], batch_size=2)
-    assert list(queue) == [[1, 2], [3]]
+def test_never_more_batches_in_flight_than_connections():
+    import threading
+    import time as clock
+    from concurrent.futures import ThreadPoolExecutor
+
+    lock, in_flight, peak = threading.Lock(), [0], [0]
+
+    def fetch(batch):
+        with lock:
+            in_flight[0] += 1
+            peak[0] = max(peak[0], in_flight[0])
+        clock.sleep(0.01)
+        with lock:
+            in_flight[0] -= 1
+        return batch
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        backup._fetch_in_parallel(executor, 2, [[n] for n in range(12)], fetch, lambda _r: None)
+
+    assert peak[0] == 2, "eight threads available, but only as many batches as sessions"
+
+
+def test_a_cancel_while_handling_stops_the_rest():
+    from concurrent.futures import ThreadPoolExecutor
+
+    fetched = []
+
+    def handle(_result):
+        raise backup.BackupCancelled("stop")
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        try:
+            backup._fetch_in_parallel(executor, 1, [[n] for n in range(50)], lambda b: fetched.append(b), handle)
+        except backup.BackupCancelled:
+            pass
+
+    assert len(fetched) < 50, "the queued batches were cancelled, not drained"
+
+
+def test_a_connection_keeps_a_refused_message_headers_only_on_the_second_pass(monkeypatch):
+    adapter = FlakyAdapter(failing_uids=[9])
+    _no_waiting(monkeypatch, adapter)
+    connection = backup._Connection(None, "pw", adapter=adapter)
+
+    messages, unreachable = connection.fetch("Inbox", [8, 9])
+    assert messages == ["msg-8"] and unreachable == [9], "first pass: refused, not yet salvaged"
+
+    messages, lost = connection.fetch("Inbox", [9], salvage=True)
+    assert lost == []
+    assert [m.uid for m in messages] == [9]
+    assert messages[0].body_missing is True
+    assert adapter.selected == ["Inbox"], "the folder was selected once, not per batch"
 
 
 def test_healthy_batch_is_fetched_once(monkeypatch):

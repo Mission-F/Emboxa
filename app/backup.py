@@ -6,13 +6,14 @@ import shutil
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import timedelta, timezone
 from pathlib import Path
+from queue import Queue
 
 from sqlalchemy import select, text
 
-from .config import (ARCHIVES_DIR, BACKUP_BATCH_ATTEMPTS, BACKUP_MESSAGE_ATTEMPTS, BACKUP_RETRIES,
+from .config import (ARCHIVES_DIR, BACKUP_BATCH_ATTEMPTS, BACKUP_CONNECTIONS, BACKUP_MESSAGE_ATTEMPTS, BACKUP_RETRIES,
                      BACKUP_RETRY_BACKOFF_SECONDS, BACKUP_RETRY_MAX_WAIT_SECONDS, IMAP_FETCH_BATCH)
 from .database import SessionLocal
 from .graph_adapter import MicrosoftGraphAdapter
@@ -131,37 +132,104 @@ def _connect_with_retry(account: Account, password: str) -> StandardIMAPAdapter 
     raise RuntimeError(f"Connessione IMAP fallita dopo {BACKUP_RETRIES} tentativi: {last_error}")
 
 
-class _FolderQueue:
-    """The batches of a folder, then — once — every message refused along the way.
+class _Connection:
+    """One IMAP session, used by one thread at a time; reselects a folder only when it changes."""
 
-    A retry a second after a refusal never once worked in three Yahoo runs; one minutes later,
-    after the rest of the folder has come in, is a real second chance and costs nothing until then.
+    def __init__(self, account, password, adapter=None):
+        self.account = account
+        self.password = password
+        self.adapter = adapter
+        self.folder = None
+
+    def _ensure(self):
+        if self.adapter is None:
+            self.adapter = _connect_with_retry(self.account, self.password)
+            self.folder = None
+        return self.adapter
+
+    def select(self, folder_name):
+        result = self._ensure().select_folder(folder_name)
+        self.folder = folder_name
+        return result
+
+    def fetch(self, folder_name, uids, salvage=False):
+        """Return (messages, lost). With `salvage`, a refused message is kept headers-only."""
+        if self.folder != folder_name:
+            self.select(folder_name)
+        self.adapter, messages, unreachable = _fetch_batch(
+            self._ensure(), self.account, self.password, folder_name, uids)
+        self.folder = folder_name  # a reconnect inside _fetch_batch reselects it
+        if not salvage:
+            return messages, unreachable
+        lost = []
+        for uid in unreachable:
+            # The mailbox is the owner's. A message the provider has broken is still theirs, so
+            # keep everything it will still give — sender, subject, date, recipients — as a
+            # message marked plainly as missing its body, rather than dropping it and leaving a
+            # hole in an archive someone is about to trust.
+            stub = _salvage(self.adapter, uid)
+            if stub is None:
+                lost.append(uid)
+                log.error("Messaggio UID %s perso: il server non fornisce nemmeno le intestazioni "
+                          "(cartella %s)", uid, folder_name)
+            else:
+                messages.append(stub)
+                log.warning("Messaggio UID %s salvato senza corpo dalla cartella %s%s",
+                            uid, folder_name, _describe(self.adapter, uid))
+        return messages, lost
+
+    def close(self):
+        if self.adapter is not None:
+            self.adapter.logout()
+            self.adapter = None
+
+
+class _ConnectionPool:
+    """A few IMAP sessions shared by the fetch threads; the first one is handed in already open."""
+
+    def __init__(self, account, password, size, first=None):
+        self.connections = [_Connection(account, password, adapter=first if index == 0 else None)
+                            for index in range(size)]
+        self._free: Queue = Queue()
+        for connection in self.connections:
+            self._free.put(connection)
+
+    def acquire(self) -> _Connection:
+        return self._free.get()
+
+    def release(self, connection: _Connection) -> None:
+        self._free.put(connection)
+
+    def close(self) -> None:
+        for connection in self.connections:
+            try:
+                connection.close()
+            except Exception:
+                pass
+
+
+def _fetch_in_parallel(executor, width, batches, fetch, handle):
+    """Run `fetch(batch)` on up to `width` threads; `handle(result)` runs here, as results land.
+
+    Only the waiting on the network is spread out. Parsing and storage stay on the calling
+    thread, which owns the one database session, so results arrive in completion order and the
+    archive is written exactly as it was when there was a single connection.
     """
-
-    def __init__(self, uids, batch_size):
-        self.pending = [uids[offset:offset + batch_size] for offset in range(0, len(uids), batch_size)]
-        self._deferred: list | None = []  # None once the second pass has begun
-        self.second_pass_started = False
-
-    def __iter__(self):
-        return self
-
-    def __next__(self):
-        self.second_pass_started = False
-        if not self.pending and self._deferred:
-            self.pending = [[uid] for uid in self._deferred]
-            self._deferred = None
-            self.second_pass_started = True
-        if not self.pending:
-            raise StopIteration
-        return self.pending.pop(0)
-
-    def refused(self, uids) -> list:
-        """Record refused messages; returns the ones that are now final."""
-        if self._deferred is None:
-            return list(uids)
-        self._deferred.extend(uids)
-        return []
+    batches = list(batches)
+    pending = set()
+    next_index = 0
+    try:
+        while next_index < len(batches) or pending:
+            while next_index < len(batches) and len(pending) < width:
+                pending.add(executor.submit(fetch, batches[next_index]))
+                next_index += 1
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                handle(future.result())
+    except BaseException:
+        for future in pending:
+            future.cancel()
+        raise
 
 
 def _salvage(adapter, uid):
@@ -243,6 +311,8 @@ def run_backup(job_id: int) -> None:
     adapter: StandardIMAPAdapter | MicrosoftGraphAdapter | None = None
     stage_path: Path | None = None
     snapshot: Snapshot | None = None
+    pool: _ConnectionPool | None = None
+    executor: ThreadPoolExecutor | None = None
     try:
         job = db.get(BackupJob, job_id)
         if not job or job.status != "queued":
@@ -289,6 +359,12 @@ def run_backup(job_id: int) -> None:
         job.total_messages = total
         db.commit()
 
+        # Graph refreshes a rotating token per session, so it gets exactly one.
+        connections = 1 if account.auth_provider == "microsoft" else BACKUP_CONNECTIONS
+        pool = _ConnectionPool(account, password, connections, first=adapter)
+        adapter = None  # owned by the pool from here on
+        executor = ThreadPoolExecutor(max_workers=connections, thread_name_prefix=f"backup-{job.id}")
+
         processed = 0
         attachment_count = 0
         skipped: list[str] = []
@@ -296,15 +372,108 @@ def run_backup(job_id: int) -> None:
         folder_counts: dict[str, int] = {}
         started_monotonic = time.monotonic()
         smoothed_rate = 0.0
+        folder: Folder | None = None
+
+        def store(remote_messages) -> None:
+            nonlocal processed, attachment_count, smoothed_rate
+            for remote_message in remote_messages:
+                parsed = parse_and_store(remote_message.raw, stage_path)
+                flags_lower = {flag.lower() for flag in remote_message.flags}
+                internal_date = remote_message.internal_date
+                if internal_date and internal_date.tzinfo:
+                    internal_date = internal_date.astimezone(timezone.utc).replace(tzinfo=None)
+                message = Message(
+                    snapshot_id=snapshot.id,
+                    folder_id=folder.id,
+                    imap_uid=str(remote_message.uid),
+                    message_id=parsed.message_id,
+                    in_reply_to=parsed.in_reply_to,
+                    references_json=parsed.references_json,
+                    thread_key=parsed.thread_key,
+                    subject=parsed.subject,
+                    sender=parsed.sender,
+                    recipients_to=parsed.recipients_to,
+                    recipients_cc=parsed.recipients_cc,
+                    recipients_bcc=parsed.recipients_bcc,
+                    reply_to=parsed.reply_to,
+                    date_utc=parsed.date_utc,
+                    internal_date=internal_date,
+                    headers_json=parsed.headers_json,
+                    text_body=parsed.text_body,
+                    html_body=parsed.html_body,
+                    mime_json=parsed.mime_json,
+                    flags_json=json.dumps(remote_message.flags, ensure_ascii=False),
+                    is_read="\\seen" in flags_lower,
+                    is_starred="\\flagged" in flags_lower,
+                    is_answered="\\answered" in flags_lower,
+                    has_attachments=bool(parsed.attachments),
+                    size=len(remote_message.raw),
+                    raw_sha256=parsed.raw_sha256,
+                    raw_relpath=parsed.raw_relpath,
+                )
+                db.add(message)
+                db.flush()
+                for item in parsed.attachments:
+                    db.add(Attachment(
+                        message_id=message.id,
+                        filename=item.filename,
+                        content_type=item.content_type,
+                        size=item.size,
+                        sha256=item.sha256,
+                        relpath=item.relpath,
+                        content_id=item.content_id,
+                        is_inline=item.is_inline,
+                    ))
+                recipients = " ".join((parsed.recipients_to, parsed.recipients_cc, parsed.recipients_bcc))
+                db.execute(text(
+                    "INSERT INTO message_fts(message_id,snapshot_id,subject,sender,recipients,body) "
+                    "VALUES (:message_id,:snapshot_id,:subject,:sender,:recipients,:body)"
+                ), {
+                    "message_id": message.id,
+                    "snapshot_id": snapshot.id,
+                    "subject": parsed.subject,
+                    "sender": parsed.sender,
+                    "recipients": recipients,
+                    "body": parsed.text_body,
+                })
+                processed += 1
+                attachment_count += len(parsed.attachments)
+
+            job.processed_messages = processed
+            job.attachment_count = attachment_count
+            job.percent = min(99, int(processed * 100 / total)) if total else 0
+            elapsed = max(0.001, time.monotonic() - started_monotonic)
+            sample_rate = processed / elapsed
+            smoothed_rate = sample_rate if not smoothed_rate else (smoothed_rate * 0.75 + sample_rate * 0.25)
+            job.throughput = round(smoothed_rate, 3)
+            job.eta_seconds = (
+                int(max(0, total - processed) / smoothed_rate)
+                if processed >= 10 and elapsed >= 5 and total > processed and smoothed_rate > 0 else None
+            )
+            job.updated_at = utcnow()
+            snapshot.message_count = processed
+            snapshot.attachment_count = attachment_count
+            snapshot.folder_counts_json = json.dumps(folder_counts, ensure_ascii=False)
+            db.commit()
+            owner = db.get(User, account.owner_id)
+            if owner and owner.plan != "PLUS":
+                existing = user_storage_used(db, owner.id)
+                if existing + directory_size(stage_path) > owner.storage_limit_bytes:
+                    raise RuntimeError("Storage limit reached; the previous valid backup was preserved")
+
         for remote in selectable:
             _check_cancel(db, job)
             job.current_folder = remote.name
             db.commit()
-            uidvalidity, exists = adapter.select_folder(remote.name)
-            # EXISTS is what the server says the folder holds; pass it in so a truncated SEARCH
-            # (Yahoo caps it at 10 000) is detected and worked around instead of silently
-            # archiving a fraction of the mailbox.
-            uids = adapter.message_uids(expected=exists)
+            lead = pool.acquire()
+            try:
+                uidvalidity, exists = lead.select(remote.name)
+                # EXISTS is what the server says the folder holds; pass it in so a truncated SEARCH
+                # (Yahoo caps it at 10 000) is detected and worked around instead of silently
+                # archiving a fraction of the mailbox.
+                uids = lead.adapter.message_uids(expected=exists)
+            finally:
+                pool.release(lead)
             folder = Folder(
                 snapshot_id=snapshot.id,
                 name=remote.name,
@@ -324,115 +493,39 @@ def run_backup(job_id: int) -> None:
                 )
             log.info("Backup account %s, cartella %s (%s messaggi su %s)", account.id, remote.name, len(uids), exists)
 
-            queue = _FolderQueue(uids, IMAP_FETCH_BATCH)
-            for uid_batch in queue:
+            batches = [uids[offset:offset + IMAP_FETCH_BATCH] for offset in range(0, len(uids), IMAP_FETCH_BATCH)]
+            refused: list = []
+            folder_name = remote.name
+
+            def fetch(uid_batch, salvage=False):
+                connection = pool.acquire()
+                try:
+                    return connection.fetch(folder_name, uid_batch, salvage=salvage)
+                finally:
+                    pool.release(connection)
+
+            def first_pass(result):
                 _check_cancel(db, job)
-                adapter, remote_messages, unreachable = _fetch_batch(
-                    adapter, account, password, remote.name, uid_batch)
-                for uid in queue.refused(unreachable):
-                    # The mailbox is the owner's. A message the provider has broken is still
-                    # theirs, so keep everything it will still give — sender, subject, date,
-                    # recipients — as a message marked plainly as missing its body, rather than
-                    # dropping it and leaving a hole in an archive someone is about to trust.
-                    salvaged = _salvage(adapter, uid)
-                    if salvaged is None:
-                        skipped.append(f"{remote.name}:{uid}")
-                        log.error("Messaggio UID %s perso: il server non fornisce nemmeno le "
-                                  "intestazioni (cartella %s)", uid, remote.name)
-                    else:
-                        partial.append(f"{remote.name}:{uid}")
-                        log.warning("Messaggio UID %s salvato senza corpo dalla cartella %s%s",
-                                    uid, remote.name, _describe(adapter, uid))
-                        remote_messages = list(remote_messages) + [salvaged]
-                if queue.second_pass_started:
-                    log.info("Backup account %s, cartella %s: riprovo %s messaggi rifiutati",
-                             account.id, remote.name, len(queue.pending) + 1)
+                messages, unreachable = result
+                refused.extend(unreachable)
+                store(messages)
 
-                for remote_message in remote_messages:
-                    parsed = parse_and_store(remote_message.raw, stage_path)
-                    flags_lower = {flag.lower() for flag in remote_message.flags}
-                    internal_date = remote_message.internal_date
-                    if internal_date and internal_date.tzinfo:
-                        internal_date = internal_date.astimezone(timezone.utc).replace(tzinfo=None)
-                    message = Message(
-                        snapshot_id=snapshot.id,
-                        folder_id=folder.id,
-                        imap_uid=str(remote_message.uid),
-                        message_id=parsed.message_id,
-                        in_reply_to=parsed.in_reply_to,
-                        references_json=parsed.references_json,
-                        thread_key=parsed.thread_key,
-                        subject=parsed.subject,
-                        sender=parsed.sender,
-                        recipients_to=parsed.recipients_to,
-                        recipients_cc=parsed.recipients_cc,
-                        recipients_bcc=parsed.recipients_bcc,
-                        reply_to=parsed.reply_to,
-                        date_utc=parsed.date_utc,
-                        internal_date=internal_date,
-                        headers_json=parsed.headers_json,
-                        text_body=parsed.text_body,
-                        html_body=parsed.html_body,
-                        mime_json=parsed.mime_json,
-                        flags_json=json.dumps(remote_message.flags, ensure_ascii=False),
-                        is_read="\\seen" in flags_lower,
-                        is_starred="\\flagged" in flags_lower,
-                        is_answered="\\answered" in flags_lower,
-                        has_attachments=bool(parsed.attachments),
-                        size=len(remote_message.raw),
-                        raw_sha256=parsed.raw_sha256,
-                        raw_relpath=parsed.raw_relpath,
-                    )
-                    db.add(message)
-                    db.flush()
-                    for item in parsed.attachments:
-                        db.add(Attachment(
-                            message_id=message.id,
-                            filename=item.filename,
-                            content_type=item.content_type,
-                            size=item.size,
-                            sha256=item.sha256,
-                            relpath=item.relpath,
-                            content_id=item.content_id,
-                            is_inline=item.is_inline,
-                        ))
-                    recipients = " ".join((parsed.recipients_to, parsed.recipients_cc, parsed.recipients_bcc))
-                    db.execute(text(
-                        "INSERT INTO message_fts(message_id,snapshot_id,subject,sender,recipients,body) "
-                        "VALUES (:message_id,:snapshot_id,:subject,:sender,:recipients,:body)"
-                    ), {
-                        "message_id": message.id,
-                        "snapshot_id": snapshot.id,
-                        "subject": parsed.subject,
-                        "sender": parsed.sender,
-                        "recipients": recipients,
-                        "body": parsed.text_body,
-                    })
-                    processed += 1
-                    attachment_count += len(parsed.attachments)
+            def second_pass(result):
+                _check_cancel(db, job)
+                messages, lost = result
+                skipped.extend(f"{folder_name}:{uid}" for uid in lost)
+                partial.extend(f"{folder_name}:{message.uid}" for message in messages if message.body_missing)
+                store(messages)
 
-                job.processed_messages = processed
-                job.attachment_count = attachment_count
-                job.percent = min(99, int(processed * 100 / total)) if total else 0
-                elapsed = max(0.001, time.monotonic() - started_monotonic)
-                sample_rate = processed / elapsed
-                smoothed_rate = sample_rate if not smoothed_rate else (smoothed_rate * 0.75 + sample_rate * 0.25)
-                job.throughput = round(smoothed_rate, 3)
-                job.eta_seconds = (
-                    int(max(0, total - processed) / smoothed_rate)
-                    if processed >= 10 and elapsed >= 5 and total > processed and smoothed_rate > 0 else None
-                )
-                job.updated_at = utcnow()
-                snapshot.message_count = processed
-                snapshot.attachment_count = attachment_count
-                snapshot.folder_counts_json = json.dumps(folder_counts, ensure_ascii=False)
-                db.commit()
-                owner = db.get(User, account.owner_id)
-                if owner and owner.plan != "PLUS":
-                    existing = user_storage_used(db, owner.id)
-                    if existing + directory_size(stage_path) > owner.storage_limit_bytes:
-                        raise RuntimeError("Storage limit reached; the previous valid backup was preserved")
-
+            _fetch_in_parallel(executor, connections, batches, fetch, first_pass)
+            if refused:
+                # A retry a second after a refusal never once worked in three Yahoo runs; one now,
+                # minutes later, is a real second chance — and what is still refused is kept
+                # headers-only rather than dropped.
+                log.info("Backup account %s, cartella %s: riprovo %s messaggi rifiutati",
+                         account.id, folder_name, len(refused))
+                _fetch_in_parallel(executor, connections, [[uid] for uid in refused],
+                                   lambda uid_batch: fetch(uid_batch, salvage=True), second_pass)
         _check_cancel(db, job)
         archive_size = directory_size(stage_path)
         final_path = snapshot_root(account.archive_uuid, snapshot.snapshot_uuid)
@@ -514,6 +607,10 @@ def run_backup(job_id: int) -> None:
         except Exception:
             log.warning("Notifica Telegram fallita per job %s", job_id)
     finally:
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
+        if pool is not None:
+            pool.close()
         if adapter:
             adapter.logout()
         db.close()
