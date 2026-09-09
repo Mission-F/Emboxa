@@ -2052,6 +2052,9 @@ def active_processes(user: User = Depends(current_user), db: Session = Depends(g
     with MBOX_IMPORT_LOCK:
         items += [_process_from_memory_job("import", "Import MBOX", job) for job in MBOX_IMPORT_JOBS.values()
                   if job["user_id"] == user.id and job["status"] in {"queued", "running"}]
+    with MAINTENANCE_JOB_LOCK:
+        items += [_process_from_memory_job("maintenance", job["label"], job) for job in MAINTENANCE_JOBS.values()
+                  if job["user_id"] == user.id and job["status"] in {"queued", "running"}]
     return {"items": items, "count": len(items)}
 
 
@@ -2140,22 +2143,118 @@ def cancel_job(job_id: int):
     return {"ok": True}
 
 
-@app.delete("/api/accounts/{account_id}/archive", dependencies=[Depends(csrf_guard)])
-def clear_archive(account_id: int, db: Session = Depends(get_db)):
-    _account_or_404(db, account_id)
+# Clearing an archive removes tens of thousands of files. Doing that inside the request left the
+# browser waiting with no feedback, and behind a proxy the request timed out while the deletion
+# carried on server-side — you could not tell whether anything had happened. These run as tracked
+# background jobs instead, and surface in the same "active processes" panel as everything else.
+MAINTENANCE_JOBS: dict[str, dict] = {}
+MAINTENANCE_JOB_LOCK = threading.Lock()
+MAINTENANCE_JOB_RETENTION = timedelta(hours=6)
+MAINTENANCE_LABELS = {"clear": "Cancellazione archivio", "delete": "Eliminazione account"}
+
+
+def _cleanup_maintenance_jobs() -> None:
+    cutoff = utcnow() - MAINTENANCE_JOB_RETENTION
+    with MAINTENANCE_JOB_LOCK:
+        for job_id, job in list(MAINTENANCE_JOBS.items()):
+            finished_at = job.get("finished_at")
+            if finished_at and finished_at < cutoff:
+                MAINTENANCE_JOBS.pop(job_id, None)
+
+
+def _maintenance_job_response(job: dict) -> dict:
+    response = {
+        "job_id": job["id"],
+        "kind": job["kind"],
+        "account_id": job["account_id"],
+        "label": job["label"],
+        "status": job["status"],
+        "percent": job["percent"],
+        "detail": job["detail"],
+        "status_url": f"/api/maintenance/jobs/{job['id']}",
+        "created_at": job["created_at"],
+        "finished_at": job.get("finished_at"),
+    }
+    if job.get("error"):
+        response["error"] = job["error"]
+    return response
+
+
+def _set_maintenance_job(job_id: str, **changes) -> None:
+    with MAINTENANCE_JOB_LOCK:
+        job = MAINTENANCE_JOBS.get(job_id)
+        if job:
+            job.update(changes)
+
+
+def _run_maintenance_job(job_id: str, kind: str, account_id: int) -> None:
+    _set_maintenance_job(job_id, status="running", percent=5, detail="Avvio…")
+    try:
+        def progress(percent: int, detail: str) -> None:
+            _set_maintenance_job(job_id, percent=percent, detail=detail)
+        if kind == "clear":
+            clear_account_archive(account_id, progress=progress)
+        else:
+            delete_account(account_id, progress=progress)
+        _set_maintenance_job(job_id, status="completed", percent=100, finished_at=utcnow(),
+                             detail=MAINTENANCE_LABELS[kind] + " completata.")
+    except Exception as error:  # noqa: BLE001 - surfaced to the user through the job
+        log.exception("Maintenance job %s failed", job_id)
+        _set_maintenance_job(job_id, status="failed", percent=100, finished_at=utcnow(),
+                             detail=str(error), error=str(error))
+
+
+def _start_maintenance_job(kind: str, account_id: int, user: User, db: Session) -> dict:
+    _cleanup_maintenance_jobs()
+    account = _account_or_404(db, account_id)
+    if account.owner_id != user.id:
+        raise HTTPException(404, "Account non trovato")
     if _running_job(db, account_id):
         raise HTTPException(409, "Interrompi il backup prima di cancellare l'archivio")
-    clear_account_archive(account_id)
-    return {"ok": True}
+    with MAINTENANCE_JOB_LOCK:
+        for job in MAINTENANCE_JOBS.values():
+            if job["account_id"] == account_id and job["status"] in {"queued", "running"}:
+                return dict(job)
+        job_id = str(uuid.uuid4())
+        job = {
+            "id": job_id,
+            "kind": kind,
+            "user_id": user.id,
+            "account_id": account_id,
+            "label": f"{MAINTENANCE_LABELS[kind]} · {account.display_name}",
+            "status": "queued",
+            "percent": 1,
+            "detail": "In coda.",
+            "created_at": utcnow(),
+            "finished_at": None,
+            "error": "",
+        }
+        MAINTENANCE_JOBS[job_id] = job
+        response = dict(job)
+    threading.Thread(target=_run_maintenance_job, args=(job_id, kind, account_id),
+                     name=f"emboxa-{kind}-{job_id[:8]}", daemon=True).start()
+    return response
+
+
+@app.delete("/api/accounts/{account_id}/archive", dependencies=[Depends(csrf_guard)])
+def clear_archive(account_id: int, response: Response, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    response.status_code = 202
+    return _maintenance_job_response(_start_maintenance_job("clear", account_id, user, db))
 
 
 @app.delete("/api/accounts/{account_id}", dependencies=[Depends(csrf_guard)])
-def remove_account(account_id: int, db: Session = Depends(get_db)):
-    _account_or_404(db, account_id)
-    if _running_job(db, account_id):
-        raise HTTPException(409, "Interrompi il backup prima di cancellare l'account")
-    delete_account(account_id)
-    return {"ok": True}
+def remove_account(account_id: int, response: Response, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    response.status_code = 202
+    return _maintenance_job_response(_start_maintenance_job("delete", account_id, user, db))
+
+
+@app.get("/api/maintenance/jobs/{job_id}", dependencies=[Depends(current_user)])
+def maintenance_job_status(job_id: str, user: User = Depends(current_user)):
+    with MAINTENANCE_JOB_LOCK:
+        job = MAINTENANCE_JOBS.get(job_id)
+        if not job or job["user_id"] != user.id:
+            raise HTTPException(404, "Job non trovato")
+        return _maintenance_job_response(dict(job))
 
 
 def _active_export_size(db: Session, user_id: int) -> int:

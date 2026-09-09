@@ -85,6 +85,19 @@ def wait_archive_import(client: TestClient, job: dict) -> dict:
     raise AssertionError("archive import job did not complete")
 
 
+
+def wait_for_job(client, response):
+    """Block until a 202 background job (clear archive / delete account) reports a final status."""
+    assert response.status_code == 202, response.text
+    status_url = response.json()["status_url"]
+    for _ in range(200):
+        job = client.get(status_url).json()
+        if job["status"] in {"completed", "failed"}:
+            return job
+        time.sleep(0.05)
+    raise AssertionError(f"job did not finish: {job}")
+
+
 def test_passkey_registration_login_and_delete(monkeypatch):
     class FakeOptions:
         def __init__(self, challenge: bytes, allow_credentials=None):
@@ -229,8 +242,10 @@ def test_storage_usage_is_recomputed_after_archive_delete():
         assert usage.status_code == 200
         assert usage.json()["storage_used"] == len(b"live-storage")
 
-        deleted = client.delete(f"/api/accounts/{account_id}/archive", headers=headers)
-        assert deleted.status_code == 200, deleted.text
+        # Clearing is a background job now, so wait for it before asserting the space is back.
+        job = wait_for_job(client, client.delete(f"/api/accounts/{account_id}/archive", headers=headers))
+        assert job["status"] == "completed", job
+
         usage = client.get("/api/web/usage")
         assert usage.status_code == 200
         assert usage.json()["storage_used"] == 0
@@ -380,7 +395,7 @@ def test_web_multitenant_plans_retention_cleanup_telegram_and_public(monkeypatch
         assert client.post(f"/api/accounts/{account_ids[0]}/permanent", headers=headers).status_code == 200
         locked = client.post(f"/api/accounts/{account_ids[1]}/permanent", headers=headers)
         assert locked.status_code == 409 and "locked until" in locked.text
-        assert client.delete(f"/api/accounts/{account_ids[0]}", headers=headers).status_code == 200
+        assert wait_for_job(client, client.delete(f"/api/accounts/{account_ids[0]}", headers=headers))["status"] == "completed"
         assert client.post(f"/api/accounts/{account_ids[1]}/permanent", headers=headers).status_code == 409
 
         with SessionLocal() as db:

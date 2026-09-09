@@ -454,13 +454,24 @@ def import_archive(path: Path, owner_id: int) -> int:
         db.close()
 
 
-def clear_account_archive(account_id: int) -> None:
+def clear_account_archive(account_id: int, progress: Callable[[int, str], None] | None = None) -> None:
+    """Drop every snapshot of an account, reporting progress as it goes.
+
+    Removing tens of thousands of message files takes minutes, so the caller runs this on a
+    background thread and needs something to show meanwhile.
+    """
+    def report(percent: int, detail: str) -> None:
+        if progress:
+            progress(percent, detail)
+
     with SessionLocal() as db:
         account = db.get(Account, account_id)
         if not account:
             return
+        archive_uuid = account.archive_uuid
         snapshots = db.scalars(select(Snapshot).where(Snapshot.account_id == account.id)).all()
-        snapshot_ids = [snapshot.id for snapshot in snapshots]
+        snapshot_uuids = [snapshot.snapshot_uuid for snapshot in snapshots]
+        report(10, "Rimozione dell'indice di ricerca…")
         account.active_snapshot_id = None
         account.message_count = 0
         account.archive_size = 0
@@ -469,22 +480,38 @@ def clear_account_archive(account_id: int) -> None:
         for snapshot in snapshots:
             db.execute(text("DELETE FROM message_fts WHERE snapshot_id=:sid"), {"sid": snapshot.id})
             db.delete(snapshot)
+        report(25, "Rimozione dei messaggi dal database…")
         db.commit()
-        if snapshot_ids:
-            shutil.rmtree(ARCHIVES_DIR / account.archive_uuid / "snapshots", ignore_errors=True)
+
+    # One directory at a time so the percentage reflects real work, not a guess.
+    snapshots_root = ARCHIVES_DIR / archive_uuid / "snapshots"
+    total = len(snapshot_uuids)
+    for index, snapshot_uuid in enumerate(snapshot_uuids, start=1):
+        report(25 + int(70 * index / max(1, total)), f"Rimozione dei file dal disco ({index}/{total})…")
+        shutil.rmtree(snapshots_root / snapshot_uuid, ignore_errors=True)
+    shutil.rmtree(snapshots_root, ignore_errors=True)
+    report(100, "Archivio cancellato.")
 
 
-def delete_account(account_id: int) -> None:
+def delete_account(account_id: int, progress: Callable[[int, str], None] | None = None) -> None:
+    def report(percent: int, detail: str) -> None:
+        if progress:
+            progress(percent, detail)
+
     with SessionLocal() as db:
         account = db.get(Account, account_id)
         if not account:
             return
         archive_uuid = account.archive_uuid
         snapshot_ids = [row[0] for row in db.execute(select(Snapshot.id).where(Snapshot.account_id == account.id))]
+        report(10, "Rimozione dell'indice di ricerca…")
         for sid in snapshot_ids:
             db.execute(text("DELETE FROM message_fts WHERE snapshot_id=:sid"), {"sid": sid})
         account.active_snapshot_id = None
         db.flush()
         db.delete(account)
+        report(30, "Rimozione dell'account dal database…")
         db.commit()
-        shutil.rmtree(ARCHIVES_DIR / archive_uuid, ignore_errors=True)
+    report(45, "Rimozione dei file dal disco…")
+    shutil.rmtree(ARCHIVES_DIR / archive_uuid, ignore_errors=True)
+    report(100, "Account eliminato.")

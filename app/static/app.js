@@ -255,8 +255,31 @@ function openAccountDialog(account = null) {
 
 async function confirmAction(title, message) {
   $('#confirm-title').textContent = title; $('#confirm-text').textContent = message;
-  const dialog = $('#confirm-dialog'); dialog.showModal();
-  return new Promise(resolve => dialog.addEventListener('close', () => resolve(dialog.returnValue === 'ok'), {once:true}));
+  const dialog = $('#confirm-dialog');
+  const form = dialog.querySelector('form');
+  dialog.returnValue = '';   // a leftover 'ok' would confirm the next action on its own
+  dialog.showModal();
+  return new Promise(resolve => {
+    let settled = false;
+    const finish = value => {
+      if (settled) return;
+      settled = true;
+      dialog.removeEventListener('close', onClose);
+      dialog.removeEventListener('cancel', onCancel);
+      form.removeEventListener('submit', onSubmit);
+      if (dialog.open) dialog.close();
+      resolve(value);
+    };
+    // Waiting only on 'close' is not enough: submitting a form[method=dialog] closes the dialog
+    // without emitting that event in some engines, which left this promise pending forever — the
+    // confirmation looked accepted and the action silently never ran.
+    const onSubmit = event => finish((event.submitter?.value ?? dialog.returnValue) === 'ok');
+    const onClose = () => finish(dialog.returnValue === 'ok');
+    const onCancel = () => finish(false);   // Escape closes the dialog without submitting anything
+    form.addEventListener('submit', onSubmit);
+    dialog.addEventListener('close', onClose);
+    dialog.addEventListener('cancel', onCancel);
+  });
 }
 
 const exportStepOrder = {prepare: 1, browser: 2, save: 3};
@@ -347,6 +370,26 @@ async function exportArchiveToNas(accountId) {
   }
 }
 
+/* Clearing an archive or deleting an account can take minutes on a large mailbox. The server runs
+   it as a tracked job, so open the active-processes panel straight away: pressing the button has
+   to visibly do something, otherwise it looks like nothing happened while work is under way. */
+async function runMaintenance(url, doneMessage) {
+  const job = await api(url, {method: 'DELETE'});
+  $('#activity-dialog').showModal();
+  await loadActivity(true);
+  let current = job;
+  while (current.status === 'queued' || current.status === 'running') {
+    await wait(1200);
+    try { current = await api(current.status_url); }
+    catch (_) { break; }   // job expired or vanished: fall through to the refresh below
+    loadActivity(true);
+  }
+  if (current.status === 'failed') toast(current.error || current.detail, 'error');
+  else toast(doneMessage);
+  await loadActivity(true);
+  await loadAccounts();
+}
+
 document.addEventListener('click', async event => {
   if (!event.target.closest('.menu') && state.openAccountMenuId !== null) closeAccountMenus();
   const close = event.target.closest('[data-close]'); if (close) return $(`#${close.dataset.close}`).close();
@@ -373,8 +416,8 @@ document.addEventListener('click', async event => {
     if (button.dataset.action === 'export') await exportArchive(id);
     if (button.dataset.action === 'export-local') await exportArchiveToNas(id);
     if (button.dataset.action === 'permanent' && await confirmAction(t('confirmPermanentTitle'), t('confirmPermanentCopy'))) { await api(`/api/accounts/${id}/permanent`,{method:'POST'});toast(t('toastPermanentUpdated'));loadAccounts(); }
-    if (button.dataset.action === 'clear' && await confirmAction(t('confirmClearArchiveTitle'), t('confirmClearArchiveCopy'))) { await api(`/api/accounts/${id}/archive`,{method:'DELETE'}); toast(t('toastArchiveCleared')); loadAccounts(); }
-    if (button.dataset.action === 'delete' && await confirmAction(t('confirmDeleteAccountTitle'), t('confirmDeleteAccountCopy'))) { await api(`/api/accounts/${id}`,{method:'DELETE'}); toast(t('toastAccountDeleted')); loadAccounts(); }
+    if (button.dataset.action === 'clear' && await confirmAction(t('confirmClearArchiveTitle'), t('confirmClearArchiveCopy'))) await runMaintenance(`/api/accounts/${id}/archive`, t('toastArchiveCleared'));
+    if (button.dataset.action === 'delete' && await confirmAction(t('confirmDeleteAccountTitle'), t('confirmDeleteAccountCopy'))) await runMaintenance(`/api/accounts/${id}`, t('toastAccountDeleted'));
   } catch (error) { button.disabled=false; toast(error.message,'error'); }
 });
 
@@ -598,7 +641,7 @@ $('#version-select').addEventListener('change',async event=>{state.snapshotId=Nu
 $('#versions-button').addEventListener('click',()=>{$('#versions-dialog').showModal();renderVersions();});
 $('#versions-dialog').addEventListener('click',async event=>{const button=event.target.closest('[data-protection]');if(!button)return;try{await api(`/api/snapshots/${button.dataset.id}/protection`,{method:'POST',body:JSON.stringify({action:button.dataset.protection})});toast(button.dataset.protection==='keep'?'Versione protetta conservata':'Protezione rimossa e retention applicata');state.versions=await api(`/api/accounts/${state.account.id}/versions`);renderVersions();}catch(error){toast(error.message,'error');}});
 
-const processIcons={backup:'inbox',transfer:'transfer',import:'upload'};
+const processIcons={backup:'inbox',transfer:'transfer',import:'upload',maintenance:'trash'};
 function processStageLabel(status){ return ({queued:t('queuedState'),running:t('runningState'),cancelling:t('cancellingState')})[status]; }
 function processCard(item){
   const metrics=[];
