@@ -109,9 +109,39 @@ class StandardIMAPAdapter:
         }]
         self.client.append(folder, raw, flags=safe_flags, msg_time=internal_date)
 
-    def message_uids(self) -> list[int]:
+    def message_uids(self, expected: int | None = None) -> list[int]:
+        """Every UID in the selected folder, even when the server truncates SEARCH.
+
+        Yahoo answers `SEARCH ALL` with at most 10 000 UIDs and reports no error, so a mailbox
+        with 38 000 messages silently looks like a mailbox with 10 000. EXISTS from SELECT is
+        authoritative, so when SEARCH comes back short we re-enumerate by sequence number, which
+        no provider caps.
+        """
         assert self.client
-        return list(self.client.search(["ALL"]))
+        uids = list(self.client.search(["ALL"]))
+        if expected is not None and len(uids) < expected:
+            recovered = self._uids_by_sequence(expected)
+            if len(recovered) > len(uids):
+                return recovered
+        return uids
+
+    def _uids_by_sequence(self, expected: int, chunk: int = 2000) -> list[int]:
+        """Map sequence numbers 1..EXISTS to UIDs in chunks, bypassing any SEARCH limit."""
+        assert self.client
+        collected: list[int] = []
+        previous = self.client.use_uid
+        self.client.use_uid = False
+        try:
+            for start in range(1, expected + 1, chunk):
+                end = min(start + chunk - 1, expected)
+                response = self.client.fetch(f"{start}:{end}", ["UID"])
+                for item in response.values():
+                    uid = _value(item, "UID")
+                    if uid is not None:
+                        collected.append(int(uid))
+        finally:
+            self.client.use_uid = previous
+        return sorted(set(collected))
 
     def fetch_messages(self, uids: list[int]) -> Iterator[RemoteMessage]:
         assert self.client

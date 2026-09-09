@@ -108,6 +108,9 @@ class Folder(Base):
     flags_json: Mapped[str] = mapped_column(Text, default="[]")
     uidvalidity: Mapped[str | None] = mapped_column(String(100), nullable=True)
     message_count: Mapped[int] = mapped_column(Integer, default=0)
+    # What the mail server reported for this folder (IMAP EXISTS). Kept next to the archived
+    # count so a shortfall stays visible long after the backup ran.
+    remote_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     snapshot: Mapped[Snapshot] = relationship(back_populates="folders")
     messages: Mapped[list["Message"]] = relationship(back_populates="folder", cascade="all, delete-orphan")

@@ -190,8 +190,11 @@ def run_backup(job_id: int) -> None:
             _check_cancel(db, job)
             job.current_folder = remote.name
             db.commit()
-            uidvalidity, _exists = adapter.select_folder(remote.name)
-            uids = adapter.message_uids()
+            uidvalidity, exists = adapter.select_folder(remote.name)
+            # EXISTS is what the server says the folder holds; pass it in so a truncated SEARCH
+            # (Yahoo caps it at 10 000) is detected and worked around instead of silently
+            # archiving a fraction of the mailbox.
+            uids = adapter.message_uids(expected=exists)
             folder = Folder(
                 snapshot_id=snapshot.id,
                 name=remote.name,
@@ -199,11 +202,17 @@ def run_backup(job_id: int) -> None:
                 flags_json=json.dumps(remote.flags, ensure_ascii=False),
                 uidvalidity=uidvalidity,
                 message_count=len(uids),
+                remote_count=exists,
             )
             db.add(folder)
             db.commit()
             folder_counts[remote.name] = len(uids)
-            log.info("Backup account %s, cartella %s (%s messaggi)", account.id, remote.name, len(uids))
+            if len(uids) < exists:
+                log.warning(
+                    "Backup account %s, cartella %s: il server dichiara %s messaggi ma ne ha elencati %s",
+                    account.id, remote.name, exists, len(uids),
+                )
+            log.info("Backup account %s, cartella %s (%s messaggi su %s)", account.id, remote.name, len(uids), exists)
 
             for offset in range(0, len(uids), IMAP_FETCH_BATCH):
                 _check_cancel(db, job)

@@ -2999,7 +2999,8 @@ def list_folders(account_id: int, snapshot_id: int | None = None, db: Session = 
     _account, snapshot = _active_snapshot(db, account_id, snapshot_id)
     folders = db.scalars(select(Folder).where(Folder.snapshot_id == snapshot.id).order_by(Folder.name.collate("NOCASE"))).all()
     return [{"id": folder.id, "name": folder.name, "delimiter": folder.delimiter,
-             "flags": json.loads(folder.flags_json or "[]"), "message_count": folder.message_count} for folder in folders]
+             "flags": json.loads(folder.flags_json or "[]"), "message_count": folder.message_count,
+             "remote_count": folder.remote_count} for folder in folders]
 
 
 def _bool_param(value: str | None) -> bool | None:
@@ -3444,7 +3445,11 @@ def account_stats(account_id: int, snapshot_id: int | None = None, db: Session =
     date_min, date_max = db.execute(select(func.min(Message.date_utc), func.max(Message.date_utc)).where(
         Message.snapshot_id == snapshot.id, Message.is_deleted.is_(False)
     )).one()
-    return {"messages": snapshot.message_count, "folders": db.scalar(select(func.count(Folder.id)).where(Folder.snapshot_id == snapshot.id)) or 0,
+    remote_total = db.scalar(select(func.sum(Folder.remote_count)).where(
+        Folder.snapshot_id == snapshot.id, Folder.remote_count.is_not(None)
+    ))
+    return {"messages": snapshot.message_count, "remote_messages": int(remote_total) if remote_total is not None else None,
+            "folders": db.scalar(select(func.count(Folder.id)).where(Folder.snapshot_id == snapshot.id)) or 0,
             "attachments": attachments, "deleted": deleted, "archive_size": snapshot_disk_size(_account, snapshot), "oldest": date_min, "newest": date_max}
 
 

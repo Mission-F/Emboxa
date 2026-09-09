@@ -271,6 +271,12 @@ a { color: var(--accent-strong); }
 .folder-item.active b { font-weight: 750; }
 .folder-item em { color: var(--text-tertiary); font-size: var(--fs-label); font-style: normal; font-weight: 700; font-variant-numeric: tabular-nums; }
 .archive-stats { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: var(--s-5) var(--s-1) 0; padding-top: var(--s-3); border-top: 1px solid var(--border); color: var(--text-tertiary); font-size: var(--fs-label); font-weight: 650; }
+/* A folder holding fewer messages than the server reported is the one thing you must not miss
+   before emptying a mailbox, so it is coloured, not just written. */
+.folder-item.folder-short em { color: var(--danger); font-weight: 800; }
+.archive-shortfall { flex-basis: 100%; margin-top: 4px; padding: 6px 8px; border-radius: var(--r-xs); background: var(--danger-soft); color: var(--danger); font-weight: 800; line-height: 1.45; }
+.archive-complete { flex-basis: 100%; margin-top: 4px; color: var(--success); font-weight: 700; }
+
 /* The span of dates the archive actually covers: the fastest answer to "did it get everything?". */
 .archive-range { flex-basis: 100%; margin-top: 2px; line-height: 1.5; }
 .archive-range b { color: var(--text-secondary); font-variant-numeric: tabular-nums; }

@@ -191,6 +191,14 @@ def run_migrations() -> None:
             conn.execute(text("CREATE INDEX IF NOT EXISTS ix_accounts_auth_provider ON accounts(auth_provider)"))
             conn.execute(text("INSERT OR IGNORE INTO schema_migrations(version) VALUES (11)"))
 
+    if 12 not in applied:
+        log.info("Applying database migration 12 (server-reported folder counts)")
+        with engine.begin() as conn:
+            present = {column["name"] for column in inspect(conn).get_columns("folders")}
+            if "remote_count" not in present:
+                conn.execute(text("ALTER TABLE folders ADD COLUMN remote_count INTEGER"))
+            conn.execute(text("INSERT OR IGNORE INTO schema_migrations(version) VALUES (12)"))
+
     # Fail clearly if the Python SQLite build unexpectedly lacks FTS5.
     with engine.connect() as conn:
         if "message_fts" not in inspect(conn).get_table_names():
