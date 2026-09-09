@@ -20,9 +20,10 @@ IMPORT_MAX_EXPANDED_BYTES = int(os.getenv("IMPORT_MAX_EXPANDED_BYTES", str(50 * 
 IMAP_TIMEOUT_SECONDS = int(os.getenv("IMAP_TIMEOUT_SECONDS", "60"))
 IMAP_FETCH_BATCH = max(1, int(os.getenv("IMAP_FETCH_BATCH", "20")))
 BACKUP_RETRIES = max(1, int(os.getenv("BACKUP_RETRIES", "5")))
-# "Please try again later" from a throttling provider means minutes, not the second or two the
-# old fixed backoff waited before giving up and discarding the whole run.
-BACKUP_RETRY_BACKOFF_SECONDS = max(1, int(os.getenv("BACKUP_RETRY_BACKOFF_SECONDS", "5")))
+# A refused batch is usually the provider asking to slow down for a moment, so the first retries
+# come quickly; only a message that keeps failing earns the long waits.
+BACKUP_RETRY_BACKOFF_SECONDS = max(1, int(os.getenv("BACKUP_RETRY_BACKOFF_SECONDS", "1")))
+BACKUP_BATCH_ATTEMPTS = max(1, int(os.getenv("BACKUP_BATCH_ATTEMPTS", "3")))
 BACKUP_RETRY_MAX_WAIT_SECONDS = max(1, int(os.getenv("BACKUP_RETRY_MAX_WAIT_SECONDS", "120")))
 BACKUP_ANOMALY_THRESHOLD = min(0.9, max(0.05, float(os.getenv("BACKUP_ANOMALY_THRESHOLD", "0.20"))))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()

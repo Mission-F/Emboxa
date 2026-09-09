@@ -12,8 +12,8 @@ from pathlib import Path
 
 from sqlalchemy import select, text
 
-from .config import (ARCHIVES_DIR, BACKUP_RETRIES, BACKUP_RETRY_BACKOFF_SECONDS,
-                     BACKUP_RETRY_MAX_WAIT_SECONDS, IMAP_FETCH_BATCH)
+from .config import (ARCHIVES_DIR, BACKUP_BATCH_ATTEMPTS, BACKUP_RETRIES,
+                     BACKUP_RETRY_BACKOFF_SECONDS, BACKUP_RETRY_MAX_WAIT_SECONDS, IMAP_FETCH_BATCH)
 from .database import SessionLocal
 from .graph_adapter import MicrosoftGraphAdapter
 from .imap_adapter import StandardIMAPAdapter
@@ -136,11 +136,16 @@ def _fetch_batch(adapter, account, password, folder_name, uids):
 
     Providers throttle a large mailbox by answering "[UNAVAILABLE] UID FETCH Server error - Please
     try again later". Retrying twice a second apart then aborting turned that into a failed backup
-    and threw away hours of downloading, so this waits properly, and if the batch still fails it
-    halves it: a single oversized or broken message can no longer take a whole folder down with it.
+    and threw away hours of downloading, so this retries and, if the batch still fails, halves it:
+    a single oversized or broken message can no longer take a whole folder down with it.
+
+    A whole batch only gets a few quick attempts, because waiting minutes on every hiccup of a
+    44 000-message mailbox costs more than the batch is worth. The long, patient waits are spent on
+    an individual message, where giving up actually loses something.
     """
     last_error = None
-    for attempt in range(BACKUP_RETRIES):
+    attempts = BACKUP_BATCH_ATTEMPTS if len(uids) > 1 else BACKUP_RETRIES
+    for attempt in range(attempts):
         try:
             return adapter, list(adapter.fetch_messages(uids)), []
         except Exception as exc:
@@ -148,7 +153,7 @@ def _fetch_batch(adapter, account, password, folder_name, uids):
             adapter.logout()
             wait = min(BACKUP_RETRY_BACKOFF_SECONDS * (2 ** attempt), BACKUP_RETRY_MAX_WAIT_SECONDS)
             log.warning("Fetch di %s messaggi da %s non riuscito (tentativo %s/%s), riprovo tra %ss: %s",
-                        len(uids), folder_name, attempt + 1, BACKUP_RETRIES, wait, exc)
+                        len(uids), folder_name, attempt + 1, attempts, wait, exc)
             time.sleep(wait)
             adapter = _connect_with_retry(account, password)
             adapter.select_folder(folder_name)
