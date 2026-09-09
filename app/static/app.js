@@ -467,10 +467,18 @@ async function openArchive(account) {
   $('#dashboard').classList.add('hidden'); $('#archive').classList.remove('hidden'); $('#search-wrap').classList.remove('hidden');
   $('#archive-name').textContent=account.display_name; $('#archive-email').textContent=account.email; $('#archive-avatar').textContent=account.display_name.charAt(0).toUpperCase(); $('#reader').innerHTML=emptyReader();
   $('#mobile-mailbox-label').textContent=account.display_name; $('#mobile-mailbox-label').classList.remove('hidden');
-  state.versions=await api(`/api/accounts/${account.id}/versions`); state.snapshotId=state.versions.find(version=>version.current)?.id||state.versions[0]?.id||null; renderVersions();
-  state.folders=await api(`/api/accounts/${account.id}/folders?${snapshotParam()}`); renderFolders(); await Promise.all([loadMessages(),loadStats()]);
+  // Four requests, one round trip. Without a snapshot id the server answers for the current
+  // archive, which is also what the version list will pick, so nothing waits on anything.
+  state.snapshotId=null; state.versions=[]; state.folders=[];
+  const versions=api(`/api/accounts/${account.id}/versions`).then(list=>{state.versions=list;state.snapshotId=list.find(version=>version.current)?.id||list[0]?.id||null;renderVersions();});
+  const folders=api(`/api/accounts/${account.id}/folders`).then(list=>{state.folders=list;renderFolders();});
+  const results=await Promise.allSettled([versions,folders,loadMessages(),loadStats()]);
+  const failed=results.find(result=>result.status==='rejected');
+  if(failed&&state.snapshotId){ // no current version on the server side: retry against the one the list chose
+    state.folders=await api(`/api/accounts/${account.id}/folders?${snapshotParam()}`); renderFolders(); await Promise.all([loadMessages(),loadStats()]);
+  } else if(failed){ toast(failed.reason?.message||String(failed.reason),'error'); }
 }
-function snapshotParam(){return new URLSearchParams({snapshot_id:state.snapshotId}).toString();}
+function snapshotParam(){return state.snapshotId?new URLSearchParams({snapshot_id:state.snapshotId}).toString():'';}
 function renderVersions(){
   $('#version-select').innerHTML=state.versions.map(version=>`<option value="${version.id}" ${version.id===state.snapshotId?'selected':''}>${date(version.completed_at)}${version.current?t('currentSuffix'):''}${version.protected?t('protectedSuffix'):''}</option>`).join('');
   const current=state.versions.find(version=>version.id===state.snapshotId),comparison=current?.comparison;
@@ -486,7 +494,7 @@ async function loadStats(){try{const stats=await api(`/api/accounts/${state.acco
   const shortfall=stats.remote_messages!=null&&stats.messages<stats.remote_messages
     ?`<span class="archive-shortfall">${t('missingWarning')}: ${numberFmt(stats.messages)} ${t('ofLabel')} ${numberFmt(stats.remote_messages)} ${t('messagesUnit')}</span>`
     :(stats.remote_messages!=null?`<span class="archive-complete">${t('completeArchive')}</span>`:'');$('#archive-stats').innerHTML=`<span>${numberFmt(stats.messages)} ${t('messagesUnit')}</span><span>${stats.folders} ${stats.folders===1?t('folderSingular'):t('folderPlural')}</span><span>${stats.attachments} ${stats.attachments===1?t('attachmentSingular'):t('attachmentPlural')}</span><span>${bytes(stats.archive_size)}</span>${span}${shortfall}`;renderFolders();}catch(error){toast(error.message,'error');}}
-function queryString(){const params=new URLSearchParams({page:state.page,page_size:state.pageSize,snapshot_id:state.snapshotId,trash:state.trash,sort:state.sort,...state.filters});if(state.folderId)params.set('folder_id',state.folderId);const search=$('#search-input').value.trim();if(search)params.set('q',search);return params;}
+function queryString(){const params=new URLSearchParams({page:state.page,page_size:state.pageSize,trash:state.trash,sort:state.sort,...state.filters});if(state.snapshotId)params.set('snapshot_id',state.snapshotId);if(state.folderId)params.set('folder_id',state.folderId);const search=$('#search-input').value.trim();if(search)params.set('q',search);return params;}
 async function loadMessages(){
   $('#message-list').innerHTML=skeleton();
   try {

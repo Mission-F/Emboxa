@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from sqlalchemy import or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from .config import ARCHIVES_DIR
 from .models import Account, Snapshot
@@ -30,7 +30,24 @@ def snapshot_path(account: Account, snapshot: Snapshot) -> Path:
 
 
 def snapshot_disk_size(account: Account, snapshot: Snapshot) -> int:
-    return directory_size(snapshot_path(account, snapshot))
+    """The size of a snapshot on disk, as recorded when its files were written.
+
+    This used to walk the snapshot directory on every call — and it is called from the account
+    list the dashboard polls every few seconds, from the version list and from the stats line
+    when an archive opens. On a 45 000-message mailbox that is 90 000 stat() calls per request,
+    on a NAS, several times over: the whole app crawled. Every path that writes or removes
+    snapshot files records the size, so the recorded number is the truth; a snapshot from before
+    the number was kept is measured once and remembered.
+    """
+    if snapshot.archive_size:
+        return int(snapshot.archive_size)
+    size = directory_size(snapshot_path(account, snapshot))
+    if size:
+        snapshot.archive_size = size
+        session = object_session(snapshot)
+        if session is not None:
+            session.commit()
+    return size
 
 
 def account_active_archive_size(db: Session, account: Account) -> int:

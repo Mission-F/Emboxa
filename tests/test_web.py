@@ -217,7 +217,9 @@ def test_microsoft_oauth_connect_refresh_token_and_disconnect(monkeypatch):
             assert account.encrypted_password is None and account.imap_enabled is False
 
 
-def test_storage_usage_is_recomputed_after_archive_delete():
+def test_storage_usage_comes_from_the_recorded_sizes_and_clears_with_the_archive():
+    """Usage is read from the sizes recorded when files were written, never measured per request:
+    measuring meant walking every archived file on disk each time the dashboard polled."""
     with SessionLocal() as db:
         user = User(username="storage-live@example.com", email="storage-live@example.com",
                     password_hash=hash_password("secure-storage-password"), verified_at=utcnow())
@@ -240,7 +242,7 @@ def test_storage_usage_is_recomputed_after_archive_delete():
         headers = login(client, "storage-live@example.com", "secure-storage-password")
         usage = client.get("/api/web/usage")
         assert usage.status_code == 200
-        assert usage.json()["storage_used"] == len(b"live-storage")
+        assert usage.json()["storage_used"] == 999999, "the recorded size, not a walk of the disk"
 
         # Clearing is a background job now, so wait for it before asserting the space is back.
         job = wait_for_job(client, client.delete(f"/api/accounts/{account_id}/archive", headers=headers))

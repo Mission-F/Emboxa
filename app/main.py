@@ -96,7 +96,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("emboxa")
 BASE_DIR = Path(__file__).resolve().parent
-ASSET_VERSION = "20260909-1710"
+ASSET_VERSION = "20260910-0930"
 
 
 @asynccontextmanager
@@ -3165,13 +3165,22 @@ def list_messages(
         "sender": (Message.sender.collate("NOCASE"), Message.date_utc.desc()),
         "subject": (Message.subject.collate("NOCASE"), Message.date_utc.desc()),
     }[sort]
-    rows = db.scalars(query.order_by(*order).offset((page - 1) * page_size).limit(page_size)).all()
+    # A page is a list, not a reader: fetch the row heads and a slice of text for the snippet, not
+    # fifty full bodies with their HTML — on a mailbox of megabyte-sized messages that alone was
+    # most of the wait before the first page showed.
+    listing = query.with_only_columns(
+        Message.id, Message.folder_id, Message.subject, Message.sender, Message.date_utc,
+        Message.internal_date, func.substr(Message.text_body, 1, 600).label("snippet"),
+        Message.is_read, Message.is_starred, Message.has_attachments, Message.thread_key,
+        Message.is_deleted,
+    )
+    rows = db.execute(listing.order_by(*order).offset((page - 1) * page_size).limit(page_size)).all()
     return {
         "page": page, "page_size": page_size, "total": total,
         "items": [{
             "id": item.id, "folder_id": item.folder_id, "subject": item.subject or "(senza oggetto)",
             "sender": item.sender, "date": item.date_utc or item.internal_date,
-            "snippet": re.sub(r"\s+", " ", item.text_body or "").strip()[:220],
+            "snippet": re.sub(r"\s+", " ", item.snippet or "").strip()[:220],
             "is_read": item.is_read, "is_starred": item.is_starred,
             "has_attachments": item.has_attachments, "thread_key": item.thread_key,
             "is_deleted": item.is_deleted,
