@@ -73,7 +73,18 @@ def test_imap_transfer_quota_test_and_tenant_safety(monkeypatch):
         test = client.post("/api/imap-transfer/test", headers=headers, json={"destination":{"account_id":destination_id}})
         assert test.status_code == 200 and test.json()["quota_consumed"] is False
         assert client.post("/api/imap-transfer/test", headers=headers, json={"destination":{"account_id":foreign_id}}).status_code == 404
-        body = {"destination":{"account_id":destination_id}, "mode":"preserve", "skip_duplicates":True}
+        # Folder names arrive from a form, so they are checked against the snapshot before a job
+        # exists — and before the quota is spent on a restore that could not have run.
+        unknown = client.post(f"/api/accounts/{source_id}/transfers", headers=headers, json={
+            "destination":{"account_id":destination_id}, "mode":"preserve", "folders":["Inesistente"]})
+        assert unknown.status_code == 422 and "Inesistente" in unknown.text
+        backwards = client.post(f"/api/accounts/{source_id}/transfers", headers=headers, json={
+            "destination":{"account_id":destination_id}, "mode":"preserve",
+            "date_from":"2025-06-01T00:00:00", "date_to":"2025-01-01T00:00:00"})
+        assert backwards.status_code == 422
+
+        body = {"destination":{"account_id":destination_id}, "mode":"preserve", "skip_duplicates":True,
+                "folders":["INBOX"], "date_from":"2020-01-01T00:00:00"}
         first = client.post(f"/api/accounts/{source_id}/transfers", headers=headers, json=body)
         second = client.post(f"/api/accounts/{source_id}/transfers", headers=headers, json=body)
         third = client.post(f"/api/accounts/{source_id}/transfers", headers=headers, json=body)
@@ -82,6 +93,9 @@ def test_imap_transfer_quota_test_and_tenant_safety(monkeypatch):
         assert len(submitted) == 2
         listing = client.get("/api/imap-transfers").json()
         assert listing["quota"]["used"] == 2 and listing["quota"]["remaining"] == 0
+        queued = listing["items"][0]
+        assert queued["folders"] == ["INBOX"], "the chosen folder rides on the job"
+        assert queued["date_from"].startswith("2020-01-01")
 
     with SessionLocal() as db:
         for job in db.query(IMAPTransferJob).filter(IMAPTransferJob.id.in_(submitted)).all():
@@ -106,3 +120,16 @@ def test_a_transfer_can_be_limited_to_a_date_range():
     assert len(_within_window(IMAPTransferJob(date_from=datetime(2024, 1, 1), date_to=None))) == 1
     assert len(_within_window(IMAPTransferJob(date_from=datetime(2024, 1, 1),
                                               date_to=datetime(2025, 1, 1)))) == 2
+
+
+def test_a_restore_can_be_limited_to_chosen_folders():
+    """"I only need Fatture back" used to mean restoring 44 000 messages to get 300."""
+    import json as _json
+
+    from app.models import IMAPTransferJob
+
+    everything = IMAPTransferJob(folders_json="[]")
+    assert set(_json.loads(everything.folders_json or "[]")) == set(), "empty means the whole archive"
+
+    chosen = IMAPTransferJob(folders_json=_json.dumps(["Fatture", "Viaggi"]))
+    assert set(_json.loads(chosen.folders_json)) == {"Fatture", "Viaggi"}

@@ -236,6 +236,8 @@ class IMAPTransferJob(Base):
     # Optional window on the archive: transfer only what falls between these. Absent means all of it.
     date_from: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     date_to: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Source folders to restore, as a JSON list of names. Empty means every folder.
+    folders_json: Mapped[str] = mapped_column(Text, default="[]")
     status: Mapped[str] = mapped_column(String(30), default="queued", index=True)
     current_folder: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     processed_messages: Mapped[int] = mapped_column(Integer, default=0)

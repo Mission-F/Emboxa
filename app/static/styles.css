@@ -927,3 +927,13 @@ label.purge-row:hover { background: var(--surface-secondary); }
 .transfer-window-fields { display: flex; gap: var(--s-3); flex-wrap: wrap; }
 .transfer-window-fields label { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-small); }
 .transfer-window-fields input { max-width: 190px; }
+.transfer-folders { margin-top: var(--s-4); padding: var(--s-3); border: 1px solid var(--border); border-radius: var(--r-sm); }
+.transfer-folders legend { padding: 0 6px; font-size: var(--fs-small); font-weight: 600; color: var(--heading); }
+.transfer-folders-actions { display: flex; align-items: center; gap: var(--s-3); margin-bottom: var(--s-2); font-size: var(--fs-micro); flex-wrap: wrap; }
+.transfer-folders-actions .muted { margin-left: auto; }
+.transfer-folders-list { display: grid; gap: 2px; max-height: 240px; overflow-y: auto; }
+.transfer-folder { display: flex; align-items: center; gap: var(--s-2); padding: 6px 8px; border-radius: var(--r-xs); font-size: var(--fs-small); }
+.transfer-folder:hover { background: var(--surface-secondary); }
+.transfer-folder b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.transfer-folder em { margin-left: auto; font-style: normal; font-size: var(--fs-micro); color: var(--text-tertiary); white-space: nowrap; }
+.transfer-folder.empty { opacity: .45; }

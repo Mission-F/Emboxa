@@ -97,7 +97,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("emboxa")
 BASE_DIR = Path(__file__).resolve().parent
-ASSET_VERSION = "20260910-1735"
+ASSET_VERSION = "20260910-1810"
 
 
 @asynccontextmanager
@@ -450,6 +450,8 @@ class IMAPTransferPayload(BaseModel):
     # Optional window: transfer only the messages dated inside it.
     date_from: datetime | None = None
     date_to: datetime | None = None
+    # Source folders to restore. Empty means every folder of the snapshot.
+    folders: list[str] = Field(default_factory=list)
 
 
 class MboxLinkPayload(BaseModel):
@@ -1752,7 +1754,9 @@ def _transfer_json(job: IMAPTransferJob) -> dict:
         "id": job.id, "account_id": job.account_id, "snapshot_id": job.snapshot_id,
         "destination_account_id": job.destination_account_id, "destination_label": job.destination_label,
         "mode": job.mode, "single_folder": job.single_folder, "mappings": json.loads(job.mappings_json or "{}"),
-        "skip_duplicates": job.skip_duplicates, "status": job.status, "current_folder": job.current_folder,
+        "skip_duplicates": job.skip_duplicates, "folders": json.loads(job.folders_json or "[]"),
+        "date_from": job.date_from, "date_to": job.date_to,
+        "status": job.status, "current_folder": job.current_folder,
         "processed_messages": job.processed_messages, "total_messages": job.total_messages,
         "skipped_messages": job.skipped_messages, "failed_messages": job.failed_messages,
         "percent": job.percent, "throughput": job.throughput, "eta_seconds": job.eta_seconds,
@@ -1833,6 +1837,10 @@ def create_transfer(
     if payload.date_from and payload.date_to and payload.date_from > payload.date_to:
         raise HTTPException(422, "La data iniziale è successiva a quella finale")
     source_folders = {item.name for item in db.scalars(select(Folder).where(Folder.snapshot_id == snapshot.id)).all()}
+    chosen_folders = [name for name in dict.fromkeys(str(item).strip() for item in payload.folders) if name]
+    unknown = [name for name in chosen_folders if name not in source_folders]
+    if unknown:
+        raise HTTPException(422, f"Cartelle non presenti nell'archivio: {', '.join(unknown[:5])}")
     mappings = {str(key).strip(): str(value).strip() for key, value in payload.mappings.items()
                 if str(key).strip() in source_folders and str(value).strip()}
     if any("\x00" in value or len(value) > 500 for value in mappings.values()):
@@ -1851,6 +1859,7 @@ def create_transfer(
         mode=payload.mode, single_folder=(payload.single_folder or "").strip() or None,
         mappings_json=json.dumps(mappings, ensure_ascii=False), skip_duplicates=payload.skip_duplicates,
         date_from=payload.date_from, date_to=payload.date_to,
+        folders_json=json.dumps(chosen_folders, ensure_ascii=False),
         total_messages=snapshot.message_count, quota_period=quota["period"], status="queued",
     )
     db.add(job)

@@ -117,13 +117,21 @@ def run_transfer(job_id: int) -> None:
         job.percent = 0
         job.throughput = 0
         job.eta_seconds = None
-        job.total_messages = db.query(Message).filter(
-            Message.snapshot_id == snapshot.id, Message.is_deleted.is_(False), *_within_window(job)
-        ).count()
+        selected_folders = set(json.loads(job.folders_json or "[]"))
+        total_query = db.query(Message).filter(
+            Message.snapshot_id == snapshot.id, Message.is_deleted.is_(False), *_within_window(job))
+        if selected_folders:
+            total_query = total_query.join(Folder, Message.folder_id == Folder.id).filter(
+                Folder.name.in_(selected_folders))
+        job.total_messages = total_query.count()
         db.commit()
 
         mappings = json.loads(job.mappings_json or "{}")
         folders = db.scalars(select(Folder).where(Folder.snapshot_id == snapshot.id).order_by(Folder.id)).all()
+        # An empty selection means the whole archive; anything else restores exactly those folders.
+        chosen = set(json.loads(job.folders_json or "[]"))
+        if chosen:
+            folders = [folder for folder in folders if folder.name in chosen]
         started = time.monotonic()
         appended = 0
         for folder in folders:

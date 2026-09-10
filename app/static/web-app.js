@@ -85,6 +85,7 @@ async function loadTransferPreview() {
   try {
     transferPreviewData=await api(`/api/accounts/${accountId}/transfer-preview${snapshotId?`?snapshot_id=${snapshotId}`:''}`);
     renderTransferDestinations();
+    renderTransferFolders();
     const q=transferPreviewData.quota, quota=q.limit==null?t('unlimitedRestoresPlus'):`${t('standardQuotaPrefix')} ${q.remaining} ${t('ofLabel')} ${q.limit} ${t('standardQuotaSuffix')}`;
     document.querySelector('#transfer-preview').innerHTML=`<b>${numberFmt(transferPreviewData.snapshot.messages)} ${t('messagesUnit')} · ${bytes(transferPreviewData.snapshot.size)}</b><span>${transferPreviewData.folders.length} ${transferPreviewData.folders.length===1?t('folderSingular'):t('folderPlural')}</span><small>${esc(quota)}</small>`;
   } catch(error){ transferStatus.textContent=error.message; }
@@ -155,7 +156,7 @@ document.querySelector('#transfer-back').addEventListener('click',()=>showTransf
 document.querySelector('#nav-transfers').addEventListener('click',()=>openTransfer());
 document.querySelector('#transfer-test').addEventListener('click',async()=>{ const result=document.querySelector('#transfer-test-result'); result.textContent=t('verifyingConnection'); try{const data=await api('/api/imap-transfer/test',{method:'POST',body:JSON.stringify({destination:transferDestination()})});result.textContent=`${t('connectionOkNoQuota')} · ${data.folders} ${t('folderPlural')} · ${t('noQuotaConsumed')}`;result.className='success';}catch(error){result.textContent=error.message;result.className='danger-text';} });
 document.querySelector('#transfer-jobs').addEventListener('click',async event=>{const button=event.target.closest('[data-cancel-transfer]');if(!button)return;try{await api(`/api/imap-transfers/${button.dataset.cancelTransfer}/cancel`,{method:'POST'});toast(t('toastCancelRestoreRequested'));await Promise.all([loadTransferJobs(),loadWebUsage()]);}catch(error){toast(error.message,'error');}});
-transferForm.addEventListener('submit',async event=>{event.preventDefault();const values=Object.fromEntries(new FormData(transferForm));transferStatus.textContent=t('verifyingAndQueueing');try{const result=await api(`/api/accounts/${values.account_id}/transfers`,{method:'POST',body:JSON.stringify({snapshot_id:Number(values.snapshot_id),destination:transferDestination(),mode:values.mode,single_folder:values.mode==='single'?values.single_folder:null,mappings:{},skip_duplicates:Boolean(values.skip_duplicates),date_from:values.date_from?`${values.date_from}T00:00:00`:null,date_to:values.date_to?`${values.date_to}T23:59:59`:null})});toast(`${t('restoreNumberLabel')} #${result.job.id} ${t('toastRestoreQueued')}`);showTransferStep(4);await Promise.all([loadTransferJobs(),loadWebUsage()]);}catch(error){transferStatus.textContent=error.message;}});
+transferForm.addEventListener('submit',async event=>{event.preventDefault();const values=Object.fromEntries(new FormData(transferForm));transferStatus.textContent=t('verifyingAndQueueing');try{const result=await api(`/api/accounts/${values.account_id}/transfers`,{method:'POST',body:JSON.stringify({snapshot_id:Number(values.snapshot_id),destination:transferDestination(),mode:values.mode,single_folder:values.mode==='single'?values.single_folder:null,mappings:{},skip_duplicates:Boolean(values.skip_duplicates),folders:chosenTransferFolders(),date_from:values.date_from?`${values.date_from}T00:00:00`:null,date_to:values.date_to?`${values.date_to}T23:59:59`:null})});toast(`${t('restoreNumberLabel')} #${result.job.id} ${t('toastRestoreQueued')}`);showTransferStep(4);await Promise.all([loadTransferJobs(),loadWebUsage()]);}catch(error){transferStatus.textContent=error.message;}});
 
 document.querySelector('#nav-settings').addEventListener('click',loadTelegram);
 loadWebUsage(); setInterval(()=>{loadWebUsage();if(transferDialog.open&&transferStep===4)loadTransferJobs();},15000);
@@ -167,7 +168,12 @@ async function refreshTransferWindow() {
   const form = transferForm, note = document.querySelector('#transfer-window-count');
   if (!note) return;
   const from = form.elements.date_from?.value, to = form.elements.date_to?.value;
-  if (!from && !to) { note.textContent = t('transferWindowAll'); return; }
+  if (!from && !to) {
+    note.textContent = t('transferWindowAll');
+    const keep = new Set([...document.querySelectorAll('#transfer-folders-list input:checked')].map(box => box.value));
+    loadTransferPreview().then(() => renderTransferFolders(keep));
+    return;
+  }
   const params = new URLSearchParams({snapshot_id: form.elements.snapshot_id.value});
   if (from) params.set('date_from', `${from}T00:00:00`);
   if (to) params.set('date_to', `${to}T23:59:59`);
@@ -175,6 +181,9 @@ async function refreshTransferWindow() {
     const preview = await api(`/api/accounts/${form.elements.account_id.value}/transfer-preview?${params}`);
     note.textContent = `${t('transferWindowSelected')} ${numberFmt(preview.selected)} ${t('messagesUnit')}`
       + (preview.range.undated ? ` · ${numberFmt(preview.range.undated)} ${t('purgeUndatedNote')}` : '');
+    const keep = new Set([...document.querySelectorAll('#transfer-folders-list input:checked')].map(box => box.value));
+    transferPreviewData = preview;
+    renderTransferFolders(keep);
   } catch (error) { note.textContent = error.message; }
 }
 
@@ -182,3 +191,59 @@ async function refreshTransferWindow() {
   const field = transferForm.elements[name];
   if (field) field.addEventListener('change', refreshTransferWindow);
 });
+
+
+/* ------------------------------------------------- which folders to restore */
+
+// The whole archive is the default because it is what a restore usually means, but "I only need
+// the Fatture folder back" is just as real a request and used to mean restoring 44 000 messages
+// to get 300.
+function renderTransferFolders(previous = null) {
+  const list = document.querySelector('#transfer-folders-list');
+  if (!list || !transferPreviewData) return;
+  const keep = previous || new Set(transferPreviewData.folders.map(folder => folder.name));
+  list.innerHTML = transferPreviewData.folders.map(folder => {
+    const count = folder.selected == null ? folder.messages : folder.selected;
+    return `<label class="transfer-folder ${count ? '' : 'empty'}">
+      <input type="checkbox" value="${esc(folder.name)}" ${keep.has(folder.name) ? 'checked' : ''} ${count ? '' : 'disabled'}>
+      <b>${esc(folder.name)}</b>
+      <em>${numberFmt(count)}${folder.selected != null && folder.selected !== folder.messages
+        ? ` / ${numberFmt(folder.messages)}` : ''}</em>
+    </label>`;
+  }).join('');
+  list.querySelectorAll('input').forEach(box => box.addEventListener('change', updateTransferFolderCount));
+  document.querySelector('#transfer-folders-all').onclick = () => setAllTransferFolders(true);
+  document.querySelector('#transfer-folders-none').onclick = () => setAllTransferFolders(false);
+  updateTransferFolderCount();
+}
+
+function setAllTransferFolders(checked) {
+  document.querySelectorAll('#transfer-folders-list input:not(:disabled)')
+    .forEach(box => { box.checked = checked; });
+  updateTransferFolderCount();
+}
+
+function chosenTransferFolders() {
+  const boxes = [...document.querySelectorAll('#transfer-folders-list input')];
+  const checked = boxes.filter(box => box.checked).map(box => box.value);
+  // Everything ticked is the same as no filter at all, and an empty list is what the server reads
+  // as "all" — so send nothing rather than a list that happens to name every folder.
+  return checked.length === boxes.length ? [] : checked;
+}
+
+function updateTransferFolderCount() {
+  const note = document.querySelector('#transfer-folders-count');
+  if (!note || !transferPreviewData) return;
+  const boxes = [...document.querySelectorAll('#transfer-folders-list input')];
+  const checked = boxes.filter(box => box.checked);
+  const total = checked.reduce((sum, box) => {
+    const folder = transferPreviewData.folders.find(item => item.name === box.value);
+    return sum + (folder ? (folder.selected == null ? folder.messages : folder.selected) : 0);
+  }, 0);
+  note.textContent = !checked.length ? t('transferFoldersNone')
+    : checked.length === boxes.length
+      ? `${t('transferFoldersAll')} · ${numberFmt(total)} ${t('messagesUnit')}`
+      : `${checked.length} ${t('transferFoldersChosen')} · ${numberFmt(total)} ${t('messagesUnit')}`;
+  const start = document.querySelector('#transfer-start');
+  if (start) start.disabled = !checked.length;
+}
