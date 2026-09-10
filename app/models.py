@@ -66,11 +66,13 @@ class Account(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
     snapshots: Mapped[list["Snapshot"]] = relationship(
-        back_populates="account", foreign_keys="Snapshot.account_id", cascade="all, delete-orphan"
+        back_populates="account", foreign_keys="Snapshot.account_id", cascade="all, delete-orphan",
+        passive_deletes=True
     )
-    jobs: Mapped[list["BackupJob"]] = relationship(back_populates="account", cascade="all, delete-orphan")
+    jobs: Mapped[list["BackupJob"]] = relationship(back_populates="account", cascade="all, delete-orphan", passive_deletes=True)
     transfer_jobs: Mapped[list["IMAPTransferJob"]] = relationship(
-        back_populates="account", foreign_keys="IMAPTransferJob.account_id", cascade="all, delete-orphan"
+        back_populates="account", foreign_keys="IMAPTransferJob.account_id", cascade="all, delete-orphan",
+        passive_deletes=True
     )
 
 
@@ -93,8 +95,8 @@ class Snapshot(Base):
     folder_counts_json: Mapped[str] = mapped_column(Text, default="{}")
 
     account: Mapped[Account] = relationship(back_populates="snapshots", foreign_keys=[account_id])
-    folders: Mapped[list["Folder"]] = relationship(back_populates="snapshot", cascade="all, delete-orphan")
-    messages: Mapped[list["Message"]] = relationship(back_populates="snapshot", cascade="all, delete-orphan")
+    folders: Mapped[list["Folder"]] = relationship(back_populates="snapshot", cascade="all, delete-orphan", passive_deletes=True)
+    messages: Mapped[list["Message"]] = relationship(back_populates="snapshot", cascade="all, delete-orphan", passive_deletes=True)
 
 
 class Folder(Base):
@@ -113,7 +115,7 @@ class Folder(Base):
     remote_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     snapshot: Mapped[Snapshot] = relationship(back_populates="folders")
-    messages: Mapped[list["Message"]] = relationship(back_populates="folder", cascade="all, delete-orphan")
+    messages: Mapped[list["Message"]] = relationship(back_populates="folder", cascade="all, delete-orphan", passive_deletes=True)
 
 
 class Message(Base):
@@ -158,7 +160,7 @@ class Message(Base):
 
     snapshot: Mapped[Snapshot] = relationship(back_populates="messages")
     folder: Mapped[Folder] = relationship(back_populates="messages")
-    attachments: Mapped[list["Attachment"]] = relationship(back_populates="message", cascade="all, delete-orphan")
+    attachments: Mapped[list["Attachment"]] = relationship(back_populates="message", cascade="all, delete-orphan", passive_deletes=True)
 
 
 class Attachment(Base):

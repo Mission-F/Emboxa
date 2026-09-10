@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Callable
 
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 
 from . import __version__
 from .backup import snapshot_root
@@ -454,6 +454,29 @@ def import_archive(path: Path, owner_id: int) -> int:
         db.close()
 
 
+def _drop_snapshot_rows(db, account_id: int, snapshot_ids: list[int]) -> None:
+    """Delete an account's snapshots and everything hanging off them, in a handful of statements.
+
+    This used to be ``db.delete(snapshot)`` per snapshot. The ORM honours cascade="all,
+    delete-orphan" by *loading* the children first: on a 45 000-message archive that is 45 000
+    Message objects in memory, one attachment query each, and then 90 000 individual DELETEs
+    against a 2.6 GB SQLite over a network share. It did not fail so much as never finish, which
+    is exactly what "the button does nothing" looks like from outside.
+
+    Every foreign key here is ON DELETE CASCADE and the connection sets PRAGMA foreign_keys=ON,
+    so SQLite does the whole job itself from one DELETE. message_fts is a virtual table with no
+    foreign keys, so it still needs its own statement — and because its snapshot_id column is
+    UNINDEXED, that statement scans the whole index. One scan for every snapshot at once, then,
+    rather than one per snapshot.
+    """
+    if snapshot_ids:
+        placeholders = ",".join(f":sid{index}" for index in range(len(snapshot_ids)))
+        db.execute(text(f"DELETE FROM message_fts WHERE snapshot_id IN ({placeholders})"),
+                   {f"sid{index}": sid for index, sid in enumerate(snapshot_ids)})
+    db.execute(delete(Snapshot).where(Snapshot.account_id == account_id).execution_options(
+        synchronize_session=False))
+
+
 def clear_account_archive(account_id: int, progress: Callable[[int, str], None] | None = None) -> None:
     """Drop every snapshot of an account, reporting progress as it goes.
 
@@ -469,28 +492,45 @@ def clear_account_archive(account_id: int, progress: Callable[[int, str], None] 
         if not account:
             return
         archive_uuid = account.archive_uuid
-        snapshots = db.scalars(select(Snapshot).where(Snapshot.account_id == account.id)).all()
-        snapshot_uuids = [snapshot.snapshot_uuid for snapshot in snapshots]
+        rows = db.execute(select(Snapshot.id, Snapshot.snapshot_uuid).where(
+            Snapshot.account_id == account.id)).all()
+        snapshot_ids = [row.id for row in rows]
+        snapshot_uuids = [row.snapshot_uuid for row in rows]
         report(10, "Rimozione dell'indice di ricerca…")
         account.active_snapshot_id = None
         account.message_count = 0
         account.archive_size = 0
         account.last_backup_status = "cleared"
         db.flush()
-        for snapshot in snapshots:
-            db.execute(text("DELETE FROM message_fts WHERE snapshot_id=:sid"), {"sid": snapshot.id})
-            db.delete(snapshot)
+        _drop_snapshot_rows(db, account.id, snapshot_ids)
         report(25, "Rimozione dei messaggi dal database…")
         db.commit()
 
     # One directory at a time so the percentage reflects real work, not a guess.
     snapshots_root = ARCHIVES_DIR / archive_uuid / "snapshots"
-    total = len(snapshot_uuids)
-    for index, snapshot_uuid in enumerate(snapshot_uuids, start=1):
-        report(25 + int(70 * index / max(1, total)), f"Rimozione dei file dal disco ({index}/{total})…")
-        shutil.rmtree(snapshots_root / snapshot_uuid, ignore_errors=True)
+    _remove_snapshot_files(snapshots_root, snapshot_uuids, report)
     shutil.rmtree(snapshots_root, ignore_errors=True)
     report(100, "Archivio cancellato.")
+
+
+def _remove_snapshot_files(snapshots_root: Path, snapshot_uuids: list[str],
+                           report: Callable[[int, str], None]) -> None:
+    """Delete each snapshot's files, moving the bar through the parts of a big one too.
+
+    A single snapshot can be 17 GB of raw messages and attachments on a NAS, so a per-snapshot
+    bar would sit at one number for several minutes.
+    """
+    total = max(1, len(snapshot_uuids))
+    for index, snapshot_uuid in enumerate(snapshot_uuids):
+        base, span = 25 + int(70 * index / total), int(70 / total)
+        directory = snapshots_root / snapshot_uuid
+        parts = sorted(child for child in directory.iterdir()) if directory.is_dir() else []
+        for part_index, part in enumerate(parts, start=1):
+            report(base + int(span * part_index / (len(parts) + 1)),
+                   f"Rimozione dei file dal disco ({index + 1}/{total}: {part.name})…")
+            shutil.rmtree(part, ignore_errors=True) if part.is_dir() else part.unlink(missing_ok=True)
+        report(base + span, f"Rimozione dei file dal disco ({index + 1}/{total})…")
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 def delete_account(account_id: int, progress: Callable[[int, str], None] | None = None) -> None:
@@ -505,11 +545,12 @@ def delete_account(account_id: int, progress: Callable[[int, str], None] | None 
         archive_uuid = account.archive_uuid
         snapshot_ids = [row[0] for row in db.execute(select(Snapshot.id).where(Snapshot.account_id == account.id))]
         report(10, "Rimozione dell'indice di ricerca…")
-        for sid in snapshot_ids:
-            db.execute(text("DELETE FROM message_fts WHERE snapshot_id=:sid"), {"sid": sid})
         account.active_snapshot_id = None
         db.flush()
-        db.delete(account)
+        # Same reason as in clear: let SQLite cascade instead of walking the archive through the ORM.
+        _drop_snapshot_rows(db, account.id, snapshot_ids)
+        db.execute(delete(Account).where(Account.id == account.id).execution_options(
+            synchronize_session=False))
         report(30, "Rimozione dell'account dal database…")
         db.commit()
     report(45, "Rimozione dei file dal disco…")
