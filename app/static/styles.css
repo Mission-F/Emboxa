@@ -889,3 +889,29 @@ body.auth-page { padding:0; place-items:stretch; background:#071a33; }
 .auth-shell { width:100%; min-height:100dvh; }
 .auth-form-wrap .form-status { min-height:20px; margin:-2px 0 0; font-size:12px; }
 .auth-form-wrap .form-status.success { color:var(--success); }
+
+/* ---------------------------------------------- purge a folder on the server */
+.purge-dialog .purge-content { display: flex; flex-direction: column; gap: var(--s-4); }
+.purge-table { border: 1px solid var(--border); border-radius: var(--r-sm); overflow: hidden; max-height: 320px; overflow-y: auto; }
+.purge-row {
+  display: grid; grid-template-columns: 1fr 92px 92px 104px; gap: var(--s-3);
+  align-items: center; padding: 9px var(--s-3);
+  border-bottom: 1px solid var(--border-subtle); font-size: var(--fs-small);
+}
+.purge-row:last-child { border-bottom: 0; }
+.purge-head { background: var(--surface-secondary); color: var(--text-tertiary); font-size: var(--fs-micro); text-transform: uppercase; letter-spacing: .05em; }
+label.purge-row:hover { background: var(--surface-secondary); }
+.purge-row.incomplete { opacity: .55; }
+.purge-name { display: flex; align-items: center; gap: var(--s-2); min-width: 0; }
+.purge-name b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.purge-state em { font-style: normal; font-size: var(--fs-micro); font-weight: 600; }
+.purge-state .ok { color: var(--success); }
+.purge-state .bad { color: var(--danger); }
+.purge-warning {
+  padding: var(--s-4); border-radius: var(--r-sm);
+  background: var(--danger-soft); border: 1px solid var(--danger);
+}
+.purge-warning h3 { margin: 0 0 6px; font-size: var(--fs-h3); color: var(--danger); }
+.purge-warning p { margin: 0; font-size: var(--fs-small); }
+.purge-check { display: flex; align-items: flex-start; gap: var(--s-2); font-size: var(--fs-small); line-height: 1.45; }
+.purge-check input { margin-top: 2px; flex: 0 0 auto; }

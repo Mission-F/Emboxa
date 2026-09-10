@@ -50,6 +50,7 @@ from webauthn.helpers.structs import (
 )
 
 from .archive import ArchiveError, build_export, clear_account_archive, delete_account, import_archive
+from .mailbox_purge import PurgeRefused, purge_folder, purge_preview
 from .backup import backup_manager, next_backup_time, recover_interrupted_jobs, rotate_versions, snapshot_root
 from .config import (
     ADMIN_EMAIL, ADMIN_PASSWORD, ARCHIVES_DIR, COOKIE_SECURE, DATA_DIR, EXPORTS_DIR, EXPORT_TTL_HOURS, IMPORTS_DIR, IMPORT_MAX_BYTES,
@@ -96,7 +97,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("emboxa")
 BASE_DIR = Path(__file__).resolve().parent
-ASSET_VERSION = "20260910-0930"
+ASSET_VERSION = "20260910-1620"
 
 
 @asynccontextmanager
@@ -2150,7 +2151,8 @@ def cancel_job(job_id: int):
 MAINTENANCE_JOBS: dict[str, dict] = {}
 MAINTENANCE_JOB_LOCK = threading.Lock()
 MAINTENANCE_JOB_RETENTION = timedelta(hours=6)
-MAINTENANCE_LABELS = {"clear": "Cancellazione archivio", "delete": "Eliminazione account"}
+MAINTENANCE_LABELS = {"clear": "Cancellazione archivio", "delete": "Eliminazione account",
+                      "purge": "Svuotamento cartella sul server"}
 
 
 def _cleanup_maintenance_jobs() -> None:
@@ -2187,24 +2189,38 @@ def _set_maintenance_job(job_id: str, **changes) -> None:
             job.update(changes)
 
 
-def _run_maintenance_job(job_id: str, kind: str, account_id: int) -> None:
+def _run_maintenance_job(job_id: str, kind: str, account_id: int, folder: str | None = None) -> None:
     _set_maintenance_job(job_id, status="running", percent=5, detail="Avvio…")
     try:
         def progress(percent: int, detail: str) -> None:
             _set_maintenance_job(job_id, percent=percent, detail=detail)
+
+        def cancelled() -> bool:
+            with MAINTENANCE_JOB_LOCK:
+                return bool(MAINTENANCE_JOBS.get(job_id, {}).get("cancel_requested"))
+
+        summary = MAINTENANCE_LABELS[kind] + " completata."
         if kind == "clear":
             clear_account_archive(account_id, progress=progress)
+        elif kind == "purge":
+            result = purge_folder(account_id, folder or "", progress=progress,
+                                  should_cancel=cancelled)
+            summary = (f"Cancellati {result['deleted']} messaggi da «{result['folder']}»"
+                       + (f"; {result['untouched']} non erano nell'archivio e sono stati lasciati"
+                          if result["untouched"] else "")
+                       + (" (interrotto)" if result.get("cancelled") else "") + ".")
         else:
             delete_account(account_id, progress=progress)
         _set_maintenance_job(job_id, status="completed", percent=100, finished_at=utcnow(),
-                             detail=MAINTENANCE_LABELS[kind] + " completata.")
+                             detail=summary)
     except Exception as error:  # noqa: BLE001 - surfaced to the user through the job
         log.exception("Maintenance job %s failed", job_id)
         _set_maintenance_job(job_id, status="failed", percent=100, finished_at=utcnow(),
                              detail=str(error), error=str(error))
 
 
-def _start_maintenance_job(kind: str, account_id: int, user: User, db: Session) -> dict:
+def _start_maintenance_job(kind: str, account_id: int, user: User, db: Session,
+                           folder: str | None = None) -> dict:
     _cleanup_maintenance_jobs()
     account = _account_or_404(db, account_id)
     if account.owner_id != user.id:
@@ -2221,17 +2237,19 @@ def _start_maintenance_job(kind: str, account_id: int, user: User, db: Session) 
             "kind": kind,
             "user_id": user.id,
             "account_id": account_id,
-            "label": f"{MAINTENANCE_LABELS[kind]} · {account.display_name}",
+            "label": f"{MAINTENANCE_LABELS[kind]} · {account.display_name}"
+                     + (f" · {folder}" if folder else ""),
             "status": "queued",
             "percent": 1,
             "detail": "In coda.",
             "created_at": utcnow(),
             "finished_at": None,
             "error": "",
+            "cancel_requested": False,
         }
         MAINTENANCE_JOBS[job_id] = job
         response = dict(job)
-    threading.Thread(target=_run_maintenance_job, args=(job_id, kind, account_id),
+    threading.Thread(target=_run_maintenance_job, args=(job_id, kind, account_id, folder),
                      name=f"emboxa-{kind}-{job_id[:8]}", daemon=True).start()
     return response
 
@@ -2246,6 +2264,70 @@ def clear_archive(account_id: int, response: Response, user: User = Depends(curr
 def remove_account(account_id: int, response: Response, user: User = Depends(current_user), db: Session = Depends(get_db)):
     response.status_code = 202
     return _maintenance_job_response(_start_maintenance_job("delete", account_id, user, db))
+
+
+@app.get("/api/accounts/{account_id}/purge-preview", dependencies=[Depends(current_user)])
+def purge_preview_endpoint(account_id: int, user: User = Depends(current_user),
+                           db: Session = Depends(get_db)):
+    account = _account_or_404(db, account_id)
+    if account.owner_id != user.id:
+        raise HTTPException(404, "Account non trovato")
+    if user.plan != "PLUS":
+        raise HTTPException(403, "Lo svuotamento della casella è riservato al piano PLUS.")
+    try:
+        return purge_preview(account_id)
+    except PurgeRefused as error:
+        raise HTTPException(409, str(error)) from error
+
+
+class PurgePayload(BaseModel):
+    folder: str = Field(min_length=1, max_length=1000)
+    # Typed by hand, checked here and not only in the browser: a confirmation the server does not
+    # verify is a confirmation that can be skipped by anything that is not the browser.
+    confirm_folder: str = Field(min_length=1, max_length=1000)
+    verified_backup: bool = False
+    understood_irreversible: bool = False
+
+
+@app.post("/api/accounts/{account_id}/purge", dependencies=[Depends(csrf_guard)])
+def purge_folder_endpoint(account_id: int, payload: PurgePayload, response: Response,
+                          user: User = Depends(current_user), db: Session = Depends(get_db)):
+    account = _account_or_404(db, account_id)
+    if account.owner_id != user.id:
+        raise HTTPException(404, "Account non trovato")
+    if user.plan != "PLUS":
+        raise HTTPException(403, "Lo svuotamento della casella è riservato al piano PLUS.")
+    if not (payload.verified_backup and payload.understood_irreversible):
+        raise HTTPException(400, "Conferme mancanti.")
+    if payload.confirm_folder.strip() != payload.folder.strip():
+        raise HTTPException(400, "Il nome della cartella digitato non corrisponde.")
+    if _running_job(db, account_id):
+        raise HTTPException(409, "C'è un backup in corso su questo account: interrompilo prima.")
+    # Refuse here too, before a job exists, so a folder the archive does not cover fails as a
+    # plain answer instead of as a job that dies a second later.
+    try:
+        preview = purge_preview(account_id)
+    except PurgeRefused as error:
+        raise HTTPException(409, str(error)) from error
+    target = next((item for item in preview["folders"] if item["name"] == payload.folder), None)
+    if not target:
+        raise HTTPException(404, f"La cartella «{payload.folder}» non è nell'archivio.")
+    if not target["complete"]:
+        raise HTTPException(409, f"«{payload.folder}» non è archiviata per intero "
+                                 f"({target['archived']} di {target['remote']}). Rifai il backup.")
+    response.status_code = 202
+    return _maintenance_job_response(
+        _start_maintenance_job("purge", account_id, user, db, folder=payload.folder))
+
+
+@app.post("/api/maintenance/jobs/{job_id}/cancel", dependencies=[Depends(csrf_guard)])
+def cancel_maintenance_job(job_id: str, user: User = Depends(current_user)):
+    with MAINTENANCE_JOB_LOCK:
+        job = MAINTENANCE_JOBS.get(job_id)
+        if not job or job["user_id"] != user.id:
+            raise HTTPException(404, "Job non trovato")
+        job["cancel_requested"] = True
+        return _maintenance_job_response(dict(job))
 
 
 @app.get("/api/maintenance/jobs/{job_id}", dependencies=[Depends(current_user)])

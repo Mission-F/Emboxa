@@ -165,6 +165,24 @@ class StandardIMAPAdapter:
         assert self.client
         self.client.select_folder(name, readonly=False)
 
+    def delete_uids(self, uids: list[int]) -> int:
+        """Flag the given messages deleted and expunge them. Returns how many were asked for.
+
+        UID EXPUNGE where the server offers UIDPLUS, which removes exactly these messages and
+        nothing else. A plain EXPUNGE removes everything in the folder currently carrying the
+        \\Deleted flag — including messages another client flagged and has not yet expunged — so
+        it is a fallback, not the default.
+        """
+        assert self.client
+        if not uids:
+            return 0
+        self.client.delete_messages(uids)
+        if b"UIDPLUS" in (self.client.capabilities() or ()) or "UIDPLUS" in self.capabilities():
+            self.client.expunge(uids)
+        else:
+            self.client.expunge()
+        return len(uids)
+
     def has_message_id(self, message_id: str) -> bool:
         """Check the selected folder for a duplicate without downloading messages."""
         assert self.client

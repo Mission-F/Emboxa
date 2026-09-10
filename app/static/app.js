@@ -140,7 +140,7 @@ function accountCard(account) {
   const progress = job ? `<div class="job"><div><span>${esc(job.current_folder || statusLabel(job.status))}</span><strong>${job.status==='queued'?t('inQueue'):`${job.percent}%`}</strong></div><div class="progress"><i data-progress="${job.percent}"></i></div><small>${numberFmt(job.processed_messages)} / ${job.total_messages ? numberFmt(job.total_messages) : '?'} ${t('messagesUnit')} · ${numberFmt(job.attachment_count)} ${t('attachmentsUnit')}${job.status==='running'?` · ${job.throughput.toFixed(1)} msg/s · ETA ${duration(job.eta_seconds)}`:''}</small><button data-action="cancel" data-id="${job.id}" class="text-button danger-text">${t('interrupt')}</button></div>` : '';
   return `<article class="account-card" data-account-card="${account.id}">
       <div class="card-top"><div class="ds-avatar lg account-avatar">${microsoft?'M':mbox?'B':esc(account.display_name.charAt(0).toUpperCase())}</div><div class="account-title"><h2>${esc(account.display_name)}</h2><p>${esc(account.email)}</p></div>
-      <details class="menu" data-account-menu="${account.id}" ${state.openAccountMenuId===account.id?'open':''}><summary aria-label="${t('accountActionsAria')} ${esc(account.display_name)}" aria-haspopup="menu" aria-expanded="${state.openAccountMenuId===account.id?'true':'false'}">${icon('dots')}</summary><div role="menu">${microsoft||mbox?'':`<button role="menuitem" data-action="edit" data-id="${account.id}">${t('editImap')}</button>`}<button role="menuitem" data-action="retention" data-id="${account.id}">${t('retentionVersionsAction')}</button>${account.imap_enabled?`<button role="menuitem" data-action="test-saved" data-id="${account.id}">${t('testConnection')}</button>`:''}${microsoft?`<button role="menuitem" data-action="disconnect-microsoft" data-id="${account.id}" class="danger-text">${t('disconnectMicrosoft')}</button>`:''}${!account.is_permanent?`<button role="menuitem" data-action="permanent" data-id="${account.id}">${t('makePermanent')}</button>`:`<span class="permanent-label">${t('permanentLabel')}</span>`}${account.has_archive?`<button role="menuitem" data-action="export" data-id="${account.id}">${t('exportArchiveAction')}</button><button role="menuitem" data-action="export-local" data-id="${account.id}">${t('exportToNas')}</button><button role="menuitem" data-action="clear" data-id="${account.id}" class="danger-text">${t('clearArchive')}</button>`:''}<button role="menuitem" data-action="delete" data-id="${account.id}" class="danger-text">${t('deleteAccount')}</button></div></details></div>
+      <details class="menu" data-account-menu="${account.id}" ${state.openAccountMenuId===account.id?'open':''}><summary aria-label="${t('accountActionsAria')} ${esc(account.display_name)}" aria-haspopup="menu" aria-expanded="${state.openAccountMenuId===account.id?'true':'false'}">${icon('dots')}</summary><div role="menu">${microsoft||mbox?'':`<button role="menuitem" data-action="edit" data-id="${account.id}">${t('editImap')}</button>`}<button role="menuitem" data-action="retention" data-id="${account.id}">${t('retentionVersionsAction')}</button>${account.imap_enabled?`<button role="menuitem" data-action="test-saved" data-id="${account.id}">${t('testConnection')}</button>`:''}${microsoft?`<button role="menuitem" data-action="disconnect-microsoft" data-id="${account.id}" class="danger-text">${t('disconnectMicrosoft')}</button>`:''}${!account.is_permanent?`<button role="menuitem" data-action="permanent" data-id="${account.id}">${t('makePermanent')}</button>`:`<span class="permanent-label">${t('permanentLabel')}</span>`}${account.has_archive?`<button role="menuitem" data-action="export" data-id="${account.id}">${t('exportArchiveAction')}</button><button role="menuitem" data-action="export-local" data-id="${account.id}">${t('exportToNas')}</button><button role="menuitem" data-action="clear" data-id="${account.id}" class="danger-text">${t('clearArchive')}</button>${state.plan==='PLUS'&&account.imap_enabled?`<button role="menuitem" data-action="purge" data-id="${account.id}" class="danger-text">${t('purgeMailboxAction')}</button>`:''}`:''}<button role="menuitem" data-action="delete" data-id="${account.id}" class="danger-text">${t('deleteAccount')}</button></div></details></div>
       <div class="card-tags"><span class="ds-badge plain ${microsoft?'accent':''}">${microsoft?t('providerMicrosoft'):mbox?t('providerMboxOffline'):t('providerImap')}</span>${account.is_permanent?`<span class="ds-badge plain accent">${t('permanentLabel')}</span>`:''}${account.imap_enabled?'':`<span class="ds-badge plain">${t('readOnly')}</span>`}</div>
       <div class="card-stats"><div><strong>${numberFmt(account.message_count)}</strong><span>${t('messagesUnit')}</span></div><div><strong>${bytes(account.archive_size)}</strong><span>${t('archiveUnit')}</span></div></div>
       <div class="last-backup"><span class="ds-badge ${statusTone(account.last_backup_status)}">${esc(statusLabel(account.last_backup_status))}</span><small>${account.last_backup_at ? date(account.last_backup_at) : t('neverRun')}${account.next_backup_at ? ` · ${t('prossimoPrefix')} ${date(account.next_backup_at)}` : ''}</small></div>
@@ -374,7 +374,10 @@ async function exportArchiveToNas(accountId) {
    it as a tracked job, so open the active-processes panel straight away: pressing the button has
    to visibly do something, otherwise it looks like nothing happened while work is under way. */
 async function runMaintenance(url, doneMessage) {
-  const job = await api(url, {method: 'DELETE'});
+  return pollMaintenance(await api(url, {method: 'DELETE'}), doneMessage);
+}
+
+async function pollMaintenance(job, doneMessage) {
   $('#activity-dialog').showModal();
   await loadActivity(true);
   let current = job;
@@ -388,6 +391,114 @@ async function runMaintenance(url, doneMessage) {
   else toast(doneMessage);
   await loadActivity(true);
   await loadAccounts();
+}
+
+
+/* --------------------------------------------------------- purge on server */
+
+// Emptying a folder on the mail server is the one action here that destroys something the app
+// cannot get back. The gates are: PLUS, a folder the archive covers in full, two checkboxes, the
+// folder name typed by hand — and, in the job itself, deleting only UIDs the archive already
+// holds, so mail that arrived after the backup survives.
+async function openPurgeDialog(accountId) {
+  const dialog = $('#purge-dialog');
+  const content = $('#purge-content');
+  content.innerHTML = `<p class="muted">${t('waitingEllipsis')}</p>`;
+  dialog.showModal();
+  let preview;
+  try {
+    preview = await api(`/api/accounts/${accountId}/purge-preview`);
+  } catch (error) {
+    content.innerHTML = `<p class="form-error">${esc(error.message)}</p>`;
+    return;
+  }
+  renderPurgeChoice(accountId, preview);
+}
+
+function renderPurgeChoice(accountId, preview) {
+  const folders = preview.folders || [];
+  const content = $('#purge-content');
+  if (!folders.length) {
+    content.innerHTML = `<p class="muted">${t('purgeNoFolders')}</p>`;
+    return;
+  }
+  content.innerHTML = `
+    <p class="muted">${t('purgeBasedOn')} <b>${date(preview.snapshot_at)}</b></p>
+    <div class="purge-table" role="table">
+      <div class="purge-row purge-head" role="row">
+        <span>${t('purgeFolderCol')}</span><span>${t('purgeArchivedCol')}</span>
+        <span>${t('purgeRemoteCol')}</span><span></span>
+      </div>
+      ${folders.map(folder => `
+        <label class="purge-row ${folder.complete ? '' : 'incomplete'}" role="row">
+          <span class="purge-name">
+            <input type="radio" name="purge-folder" value="${esc(folder.name)}" ${folder.complete ? '' : 'disabled'}>
+            <b>${esc(folder.name)}</b>
+          </span>
+          <span>${numberFmt(folder.archived)}</span>
+          <span>${folder.remote == null ? '—' : numberFmt(folder.remote)}</span>
+          <span class="purge-state">${folder.complete
+            ? `<em class="ok">${t('purgeComplete')}</em>`
+            : `<em class="bad">${t('purgeIncomplete')}</em>`}</span>
+        </label>`).join('')}
+    </div>
+    <p class="muted small">${t('purgeIncompleteNote')}</p>
+    <div class="dialog-actions">
+      <span class="grow"></span>
+      <button class="secondary" type="button" data-close="purge-dialog">${t('purgeCancelBtn')}</button>
+      <button class="primary" id="purge-next" type="button" disabled>${t('purgeChoose')}</button>
+    </div>`;
+
+  content.querySelectorAll('input[name="purge-folder"]').forEach(radio =>
+    radio.addEventListener('change', () => { $('#purge-next').disabled = false; }));
+  $('#purge-next').addEventListener('click', () => {
+    const chosen = content.querySelector('input[name="purge-folder"]:checked');
+    if (chosen) renderPurgeConfirm(accountId, preview, chosen.value);
+  });
+}
+
+function renderPurgeConfirm(accountId, preview, folderName) {
+  const folder = preview.folders.find(item => item.name === folderName);
+  $('#purge-content').innerHTML = `
+    <div class="purge-warning">
+      <h3>${t('purgeWarnTitle')}</h3>
+      <p>${t('purgeWarnBody')}</p>
+    </div>
+    <p><b>${t('purgeSelected')}:</b> ${esc(folderName)} — ${numberFmt(folder.archived)} ${t('messagesUnit')}</p>
+    <label class="purge-check"><input type="checkbox" id="purge-check-backup"> ${t('purgeCheckBackup')}</label>
+    <label class="purge-check"><input type="checkbox" id="purge-check-irreversible"> ${t('purgeCheckIrreversible')}</label>
+    <label class="field"><span>${t('purgeTypeName')}</span>
+      <input type="text" id="purge-confirm-name" autocomplete="off" spellcheck="false" placeholder="${esc(folderName)}"></label>
+    <div class="dialog-actions">
+      <button class="ghost" type="button" id="purge-back">${t('purgeBack')}</button>
+      <span class="grow"></span>
+      <button class="secondary" type="button" data-close="purge-dialog">${t('purgeCancelBtn')}</button>
+      <button class="danger" id="purge-go" type="button" disabled>${t('purgeStart')}</button>
+    </div>`;
+
+  const gate = () => {
+    $('#purge-go').disabled = !($('#purge-check-backup').checked
+      && $('#purge-check-irreversible').checked
+      && $('#purge-confirm-name').value.trim() === folderName);
+  };
+  ['#purge-check-backup', '#purge-check-irreversible', '#purge-confirm-name']
+    .forEach(selector => $(selector).addEventListener('input', gate));
+  $('#purge-back').addEventListener('click', () => renderPurgeChoice(accountId, preview));
+  $('#purge-go').addEventListener('click', async () => {
+    $('#purge-go').disabled = true;
+    try {
+      const job = await api(`/api/accounts/${accountId}/purge`, {method: 'POST', body: JSON.stringify({
+        folder: folderName, confirm_folder: $('#purge-confirm-name').value.trim(),
+        verified_backup: true, understood_irreversible: true,
+      })});
+      $('#purge-dialog').close();
+      toast(t('purgeStarted'));
+      await pollMaintenance(job, t('purgeStarted'));
+    } catch (error) {
+      toast(error.message, 'error');
+      gate();
+    }
+  });
 }
 
 document.addEventListener('click', async event => {
@@ -417,6 +528,7 @@ document.addEventListener('click', async event => {
     if (button.dataset.action === 'export-local') await exportArchiveToNas(id);
     if (button.dataset.action === 'permanent' && await confirmAction(t('confirmPermanentTitle'), t('confirmPermanentCopy'))) { await api(`/api/accounts/${id}/permanent`,{method:'POST'});toast(t('toastPermanentUpdated'));loadAccounts(); }
     if (button.dataset.action === 'clear' && await confirmAction(t('confirmClearArchiveTitle'), t('confirmClearArchiveCopy'))) await runMaintenance(`/api/accounts/${id}/archive`, t('toastArchiveCleared'));
+    if (button.dataset.action === 'purge') return openPurgeDialog(id);
     if (button.dataset.action === 'delete' && await confirmAction(t('confirmDeleteAccountTitle'), t('confirmDeleteAccountCopy'))) await runMaintenance(`/api/accounts/${id}`, t('toastAccountDeleted'));
   } catch (error) { button.disabled=false; toast(error.message,'error'); }
 });
@@ -980,4 +1092,5 @@ loadAccounts();initExperience();
 const microsoftResult = new URLSearchParams(location.search).get('microsoft');
 if (microsoftResult === 'connected') { toast(t('toastMicrosoftConnected')); history.replaceState({}, '', '/app'); }
 if (microsoftResult === 'error') { toast(new URLSearchParams(location.search).get('reason') || t('microsoftOauthFailedGeneric'), 'error'); history.replaceState({}, '', '/app'); }
+api('/api/web/usage').then(usage=>{state.plan=usage.plan;renderAccounts&&renderAccounts();}).catch(()=>{});
 state.polling=setInterval(()=>{loadActivity(true);loadAccounts(true);},2500);
