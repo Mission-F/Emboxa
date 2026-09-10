@@ -165,6 +165,16 @@ class StandardIMAPAdapter:
         assert self.client
         self.client.select_folder(name, readonly=False)
 
+    def uids_before(self, cutoff) -> list[int]:
+        """UIDs the server considers older than `cutoff`.
+
+        IMAP BEFORE tests INTERNALDATE — when the message reached the mailbox — not the Date
+        header the sender wrote. For deciding what is old that is the sounder of the two, and it
+        is the only one available without downloading every message first.
+        """
+        assert self.client
+        return [int(uid) for uid in self.client.search(["BEFORE", cutoff])]
+
     def delete_uids(self, uids: list[int]) -> int:
         """Flag the given messages deleted and expunge them. Returns how many were asked for.
 

@@ -140,7 +140,7 @@ function accountCard(account) {
   const progress = job ? `<div class="job"><div><span>${esc(job.current_folder || statusLabel(job.status))}</span><strong>${job.status==='queued'?t('inQueue'):`${job.percent}%`}</strong></div><div class="progress"><i data-progress="${job.percent}"></i></div><small>${numberFmt(job.processed_messages)} / ${job.total_messages ? numberFmt(job.total_messages) : '?'} ${t('messagesUnit')} · ${numberFmt(job.attachment_count)} ${t('attachmentsUnit')}${job.status==='running'?` · ${job.throughput.toFixed(1)} msg/s · ETA ${duration(job.eta_seconds)}`:''}</small><button data-action="cancel" data-id="${job.id}" class="text-button danger-text">${t('interrupt')}</button></div>` : '';
   return `<article class="account-card" data-account-card="${account.id}">
       <div class="card-top"><div class="ds-avatar lg account-avatar">${microsoft?'M':mbox?'B':esc(account.display_name.charAt(0).toUpperCase())}</div><div class="account-title"><h2>${esc(account.display_name)}</h2><p>${esc(account.email)}</p></div>
-      <details class="menu" data-account-menu="${account.id}" ${state.openAccountMenuId===account.id?'open':''}><summary aria-label="${t('accountActionsAria')} ${esc(account.display_name)}" aria-haspopup="menu" aria-expanded="${state.openAccountMenuId===account.id?'true':'false'}">${icon('dots')}</summary><div role="menu">${microsoft||mbox?'':`<button role="menuitem" data-action="edit" data-id="${account.id}">${t('editImap')}</button>`}<button role="menuitem" data-action="retention" data-id="${account.id}">${t('retentionVersionsAction')}</button>${account.imap_enabled?`<button role="menuitem" data-action="test-saved" data-id="${account.id}">${t('testConnection')}</button>`:''}${microsoft?`<button role="menuitem" data-action="disconnect-microsoft" data-id="${account.id}" class="danger-text">${t('disconnectMicrosoft')}</button>`:''}${!account.is_permanent?`<button role="menuitem" data-action="permanent" data-id="${account.id}">${t('makePermanent')}</button>`:`<span class="permanent-label">${t('permanentLabel')}</span>`}${account.has_archive?`<button role="menuitem" data-action="export" data-id="${account.id}">${t('exportArchiveAction')}</button><button role="menuitem" data-action="export-local" data-id="${account.id}">${t('exportToNas')}</button><button role="menuitem" data-action="clear" data-id="${account.id}" class="danger-text">${t('clearArchive')}</button>${state.plan==='PLUS'&&account.imap_enabled?`<button role="menuitem" data-action="purge" data-id="${account.id}" class="danger-text">${t('purgeMailboxAction')}</button>`:''}`:''}<button role="menuitem" data-action="delete" data-id="${account.id}" class="danger-text">${t('deleteAccount')}</button></div></details></div>
+      <details class="menu" data-account-menu="${account.id}" ${state.openAccountMenuId===account.id?'open':''}><summary aria-label="${t('accountActionsAria')} ${esc(account.display_name)}" aria-haspopup="menu" aria-expanded="${state.openAccountMenuId===account.id?'true':'false'}">${icon('dots')}</summary><div role="menu">${microsoft||mbox?'':`<button role="menuitem" data-action="edit" data-id="${account.id}">${t('editImap')}</button>`}<button role="menuitem" data-action="retention" data-id="${account.id}">${t('retentionVersionsAction')}</button>${account.imap_enabled?`<button role="menuitem" data-action="test-saved" data-id="${account.id}">${t('testConnection')}</button>`:''}${microsoft?`<button role="menuitem" data-action="disconnect-microsoft" data-id="${account.id}" class="danger-text">${t('disconnectMicrosoft')}</button>`:''}${!account.is_permanent?`<button role="menuitem" data-action="permanent" data-id="${account.id}">${t('makePermanent')}</button>`:`<span class="permanent-label">${t('permanentLabel')}</span>`}${account.has_archive?`<button role="menuitem" data-action="export" data-id="${account.id}">${t('exportArchiveAction')}</button><button role="menuitem" data-action="export-local" data-id="${account.id}">${t('exportToNas')}</button><button role="menuitem" data-action="clear" data-id="${account.id}" class="danger-text">${t('clearArchive')}</button>${state.plan==='PLUS'&&account.imap_enabled?`<button role="menuitem" data-action="purge" data-id="${account.id}" class="danger-text">${t('purgeMailboxAction')}</button>`:''}`:''}${state.plan==='PLUS'&&account.imap_enabled?`<button role="menuitem" data-action="purge-direct" data-id="${account.id}" class="danger-text">${t('directPurgeAction')}</button>`:''}<button role="menuitem" data-action="delete" data-id="${account.id}" class="danger-text">${t('deleteAccount')}</button></div></details></div>
       <div class="card-tags"><span class="ds-badge plain ${microsoft?'accent':''}">${microsoft?t('providerMicrosoft'):mbox?t('providerMboxOffline'):t('providerImap')}</span>${account.is_permanent?`<span class="ds-badge plain accent">${t('permanentLabel')}</span>`:''}${account.imap_enabled?'':`<span class="ds-badge plain">${t('readOnly')}</span>`}</div>
       <div class="card-stats"><div><strong>${numberFmt(account.message_count)}</strong><span>${t('messagesUnit')}</span></div><div><strong>${bytes(account.archive_size)}</strong><span>${t('archiveUnit')}</span></div></div>
       <div class="last-backup"><span class="ds-badge ${statusTone(account.last_backup_status)}">${esc(statusLabel(account.last_backup_status))}</span><small>${account.last_backup_at ? date(account.last_backup_at) : t('neverRun')}${account.next_backup_at ? ` · ${t('prossimoPrefix')} ${date(account.next_backup_at)}` : ''}</small></div>
@@ -526,6 +526,111 @@ function renderPurgeConfirm(accountId, preview, folderName, before = '') {
   });
 }
 
+/* ------------------------------------------- delete on the server, no checks */
+
+// The deliberate counterpart to openPurgeDialog: that one refuses whatever the archive cannot
+// account for, this one is the instruction to act on the mailbox regardless. Kept on its own
+// screen, with its own wording and colour, so the two are never each other by accident.
+async function openDirectPurgeDialog(accountId) {
+  const dialog = $('#direct-purge-dialog');
+  const content = $('#direct-purge-content');
+  content.innerHTML = `<p class="muted">${t('directPurgeLoading')}</p>`;
+  dialog.showModal();
+  try {
+    const data = await api(`/api/accounts/${accountId}/server-folders`);
+    renderDirectPurgeChoice(accountId, data.folders || []);
+  } catch (error) {
+    content.innerHTML = `<p class="form-error">${esc(error.message)}</p>`;
+  }
+}
+
+function renderDirectPurgeChoice(accountId, folders, before = '') {
+  const content = $('#direct-purge-content');
+  content.innerHTML = `
+    <p class="muted">${t('directPurgeLive')}</p>
+    <label class="field purge-before">
+      <span>${t('purgeBeforeLabel')}</span>
+      <input type="date" id="direct-before" value="${esc(before)}">
+      <small class="muted">${t('purgeBeforeHint')}</small>
+    </label>
+    <div class="purge-table" role="table">
+      <div class="purge-row purge-head direct-row" role="row">
+        <span>${t('purgeFolderCol')}</span><span>${t('directPurgeOnServer')}</span><span></span>
+      </div>
+      ${folders.map(folder => `
+        <label class="purge-row direct-row ${folder.messages ? '' : 'incomplete'}" role="row">
+          <span class="purge-name">
+            <input type="radio" name="direct-folder" value="${esc(folder.name)}" ${folder.messages ? '' : 'disabled'}>
+            <b>${esc(folder.name)}</b>
+          </span>
+          <span class="purge-delete-count">${numberFmt(folder.messages)}</span>
+          <span class="purge-state">${folder.messages ? '' : `<em class="muted">${t('directPurgeEmptyFolder')}</em>`}</span>
+        </label>`).join('')}
+    </div>
+    <p class="muted small">${t('directPurgeSafeHint')}</p>
+    <div class="dialog-actions">
+      <span class="grow"></span>
+      <button class="secondary" type="button" data-close="direct-purge-dialog">${t('purgeCancelBtn')}</button>
+      <button class="primary" id="direct-next" type="button" disabled>${t('purgeChoose')}</button>
+    </div>`;
+
+  content.querySelectorAll('input[name="direct-folder"]').forEach(radio =>
+    radio.addEventListener('change', () => { $('#direct-next').disabled = false; }));
+  $('#direct-next').addEventListener('click', () => {
+    const chosen = content.querySelector('input[name="direct-folder"]:checked');
+    if (chosen) {
+      const folder = folders.find(item => item.name === chosen.value);
+      renderDirectPurgeConfirm(accountId, folders, folder, $('#direct-before').value);
+    }
+  });
+}
+
+function renderDirectPurgeConfirm(accountId, folders, folder, before) {
+  $('#direct-purge-content').innerHTML = `
+    <div class="purge-warning direct-warning">
+      <h3>${t('directPurgeWarnTitle')}</h3>
+      <p>${t('directPurgeWarnBody')}</p>
+    </div>
+    <p class="purge-summary"><b>${esc(folder.name)}</b> — ${before
+      ? `${t('purgeSummaryBefore')} <b>${dateOnly(`${before}T00:00:00`)}</b>`
+      : `${numberFmt(folder.messages)} ${t('directPurgeSelectedCount')}`}</p>
+    <label class="purge-check"><input type="checkbox" id="direct-check-irreversible"> ${t('directPurgeCheckIrreversible')}</label>
+    <label class="purge-check"><input type="checkbox" id="direct-check-nobackup"> ${t('directPurgeCheckNoBackup')}</label>
+    <label class="field"><span>${t('purgeTypeName')}</span>
+      <input type="text" id="direct-confirm-name" autocomplete="off" spellcheck="false" placeholder="${esc(folder.name)}"></label>
+    <div class="dialog-actions">
+      <button class="ghost" type="button" id="direct-back">${t('purgeBack')}</button>
+      <span class="grow"></span>
+      <button class="secondary" type="button" data-close="direct-purge-dialog">${t('purgeCancelBtn')}</button>
+      <button class="danger" id="direct-go" type="button" disabled>${t('directPurgeStart')}</button>
+    </div>`;
+
+  const gate = () => {
+    $('#direct-go').disabled = !($('#direct-check-irreversible').checked
+      && $('#direct-check-nobackup').checked
+      && $('#direct-confirm-name').value.trim() === folder.name);
+  };
+  ['#direct-check-irreversible', '#direct-check-nobackup', '#direct-confirm-name']
+    .forEach(selector => $(selector).addEventListener('input', gate));
+  $('#direct-back').addEventListener('click', () => renderDirectPurgeChoice(accountId, folders, before));
+  $('#direct-go').addEventListener('click', async () => {
+    $('#direct-go').disabled = true;
+    try {
+      const job = await api(`/api/accounts/${accountId}/purge-direct`, {method: 'POST', body: JSON.stringify({
+        folder: folder.name, confirm_folder: $('#direct-confirm-name').value.trim(),
+        understood_irreversible: true, understood_no_backup_check: true,
+        before: before ? `${before}T00:00:00` : null,
+      })});
+      $('#direct-purge-dialog').close();
+      toast(t('purgeStarted'));
+      await pollMaintenance(job, t('purgeStarted'));
+    } catch (error) {
+      toast(error.message, 'error');
+      gate();
+    }
+  });
+}
+
 document.addEventListener('click', async event => {
   if (!event.target.closest('.menu') && state.openAccountMenuId !== null) closeAccountMenus();
   const close = event.target.closest('[data-close]'); if (close) return $(`#${close.dataset.close}`).close();
@@ -554,6 +659,7 @@ document.addEventListener('click', async event => {
     if (button.dataset.action === 'permanent' && await confirmAction(t('confirmPermanentTitle'), t('confirmPermanentCopy'))) { await api(`/api/accounts/${id}/permanent`,{method:'POST'});toast(t('toastPermanentUpdated'));loadAccounts(); }
     if (button.dataset.action === 'clear' && await confirmAction(t('confirmClearArchiveTitle'), t('confirmClearArchiveCopy'))) await runMaintenance(`/api/accounts/${id}/archive`, t('toastArchiveCleared'));
     if (button.dataset.action === 'purge') return openPurgeDialog(id);
+    if (button.dataset.action === 'purge-direct') return openDirectPurgeDialog(id);
     if (button.dataset.action === 'delete' && await confirmAction(t('confirmDeleteAccountTitle'), t('confirmDeleteAccountCopy'))) await runMaintenance(`/api/accounts/${id}`, t('toastAccountDeleted'));
   } catch (error) { button.disabled=false; toast(error.message,'error'); }
 });

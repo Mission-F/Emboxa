@@ -50,7 +50,8 @@ from webauthn.helpers.structs import (
 )
 
 from .archive import ArchiveError, build_export, clear_account_archive, delete_account, import_archive
-from .mailbox_purge import PurgeRefused, purge_folder, purge_preview
+from .mailbox_purge import (PurgeRefused, purge_folder, purge_folder_direct, purge_preview,
+                            server_folders)
 from .backup import backup_manager, next_backup_time, recover_interrupted_jobs, rotate_versions, snapshot_root
 from .config import (
     ADMIN_EMAIL, ADMIN_PASSWORD, ARCHIVES_DIR, COOKIE_SECURE, DATA_DIR, EXPORTS_DIR, EXPORT_TTL_HOURS, IMPORTS_DIR, IMPORT_MAX_BYTES,
@@ -97,7 +98,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("emboxa")
 BASE_DIR = Path(__file__).resolve().parent
-ASSET_VERSION = "20260910-1810"
+ASSET_VERSION = "20260910-1905"
 
 
 @asynccontextmanager
@@ -2188,7 +2189,8 @@ MAINTENANCE_JOBS: dict[str, dict] = {}
 MAINTENANCE_JOB_LOCK = threading.Lock()
 MAINTENANCE_JOB_RETENTION = timedelta(hours=6)
 MAINTENANCE_LABELS = {"clear": "Cancellazione archivio", "delete": "Eliminazione account",
-                      "purge": "Svuotamento cartella sul server"}
+                      "purge": "Svuotamento cartella sul server",
+                      "purge-direct": "Eliminazione diretta dal server"}
 
 
 def _cleanup_maintenance_jobs() -> None:
@@ -2239,6 +2241,12 @@ def _run_maintenance_job(job_id: str, kind: str, account_id: int, folder: str | 
         summary = MAINTENANCE_LABELS[kind] + " completata."
         if kind == "clear":
             clear_account_archive(account_id, progress=progress)
+        elif kind == "purge-direct":
+            result = purge_folder_direct(account_id, folder or "", before=before,
+                                         progress=progress, should_cancel=cancelled)
+            summary = (f"Cancellati {result['deleted']} messaggi da «{result['folder']}» "
+                       "senza verifiche sull'archivio"
+                       + (" (interrotto)" if result.get("cancelled") else "") + ".")
         elif kind == "purge":
             result = purge_folder(account_id, folder or "", before=before, progress=progress,
                                   should_cancel=cancelled)
@@ -2362,6 +2370,52 @@ def purge_folder_endpoint(account_id: int, payload: PurgePayload, response: Resp
     response.status_code = 202
     return _maintenance_job_response(
         _start_maintenance_job("purge", account_id, user, db, folder=payload.folder,
+                               before=payload.before))
+
+
+@app.get("/api/accounts/{account_id}/server-folders", dependencies=[Depends(current_user)])
+def server_folders_endpoint(account_id: int, user: User = Depends(current_user),
+                            db: Session = Depends(get_db)):
+    account = _account_or_404(db, account_id)
+    if account.owner_id != user.id:
+        raise HTTPException(404, "Account non trovato")
+    if user.plan != "PLUS":
+        raise HTTPException(403, "Riservato al piano PLUS.")
+    try:
+        return server_folders(account_id)
+    except PurgeRefused as error:
+        raise HTTPException(409, str(error)) from error
+
+
+class DirectPurgePayload(BaseModel):
+    folder: str = Field(min_length=1, max_length=1000)
+    confirm_folder: str = Field(min_length=1, max_length=1000)
+    understood_irreversible: bool = False
+    # Named for what it actually means. This route deletes mail the program cannot get back, and
+    # the word "no_backup" is the one the person clicking should have read.
+    understood_no_backup_check: bool = False
+    before: datetime | None = None
+
+
+@app.post("/api/accounts/{account_id}/purge-direct", dependencies=[Depends(csrf_guard)])
+def purge_direct_endpoint(account_id: int, payload: DirectPurgePayload, response: Response,
+                          user: User = Depends(current_user), db: Session = Depends(get_db)):
+    account = _account_or_404(db, account_id)
+    if account.owner_id != user.id:
+        raise HTTPException(404, "Account non trovato")
+    if user.plan != "PLUS":
+        raise HTTPException(403, "Riservato al piano PLUS.")
+    if not (payload.understood_irreversible and payload.understood_no_backup_check):
+        raise HTTPException(400, "Conferme mancanti.")
+    if payload.confirm_folder.strip() != payload.folder.strip():
+        raise HTTPException(400, "Il nome della cartella digitato non corrisponde.")
+    if _running_job(db, account_id):
+        raise HTTPException(409, "C'è un backup in corso su questo account: interrompilo prima.")
+    log.warning("Cancellazione diretta richiesta: utente %s, account %s, cartella %s",
+                user.id, account_id, payload.folder)
+    response.status_code = 202
+    return _maintenance_job_response(
+        _start_maintenance_job("purge-direct", account_id, user, db, folder=payload.folder,
                                before=payload.before))
 
 

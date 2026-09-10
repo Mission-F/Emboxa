@@ -22,6 +22,99 @@ class PurgeRefused(RuntimeError):
     """The archive does not cover what is about to be deleted."""
 
 
+def server_folders(account_id: int) -> dict:
+    """The folders as the mail server has them right now, with the count it reports.
+
+    Deliberately not the archive's list: this feeds the screen whose whole point is to act on the
+    mailbox without consulting the backup, so it has to show the mailbox.
+    """
+    with SessionLocal() as db:
+        account = db.get(Account, account_id)
+        if not account or not account.imap_enabled:
+            raise PurgeRefused("Account IMAP non disponibile")
+        if account.auth_provider == "microsoft":
+            raise PurgeRefused("Per ora è disponibile solo sulle caselle IMAP.")
+        password = decrypt_secret(account.encrypted_password)
+
+    adapter = _connect_with_retry(account, password)
+    try:
+        folders = []
+        for remote in adapter.list_folders(account.root_folder):
+            if "\\Noselect" in remote.flags:
+                continue
+            try:
+                _uidvalidity, exists = adapter.select_folder(remote.name)
+            except Exception:
+                log.warning("Cartella %s non selezionabile", remote.name, exc_info=True)
+                continue
+            folders.append({"name": remote.name, "messages": int(exists)})
+        return {"folders": folders}
+    finally:
+        try:
+            adapter.logout()
+        except Exception:
+            log.warning("Logout dopo l'elenco cartelle non riuscito", exc_info=True)
+
+
+def purge_folder_direct(account_id: int, folder_name: str, before: datetime | None = None,
+                        progress: Callable[[int, str], None] | None = None,
+                        should_cancel: Callable[[], bool] | None = None) -> dict:
+    """Empty a folder on the server without consulting the archive at all.
+
+    The archive-backed purge refuses anything it cannot prove is backed up. This is the opposite
+    instruction, asked for deliberately: the mailbox belongs to whoever is asking, and emptying a
+    folder is a thing every mail client does. Nothing it removes is recoverable by this program
+    afterwards, which is why it lives on its own screen rather than as a checkbox on the safe one.
+
+    `before` is resolved by the server through IMAP BEFORE, which tests the date the message
+    arrived: with no archive to consult there is nowhere else a date could come from.
+    """
+    def report(percent: int, detail: str) -> None:
+        if progress:
+            progress(percent, detail)
+
+    with SessionLocal() as db:
+        account = db.get(Account, account_id)
+        if not account or not account.imap_enabled:
+            raise PurgeRefused("Account IMAP non disponibile")
+        if account.auth_provider == "microsoft":
+            raise PurgeRefused("Per ora è disponibile solo sulle caselle IMAP.")
+        password = decrypt_secret(account.encrypted_password)
+
+    adapter = _connect_with_retry(account, password)
+    try:
+        report(4, f"Apertura di «{folder_name}» sul server.")
+        _uidvalidity, exists = adapter.select_folder(folder_name)
+        adapter.select_write_folder(folder_name)
+        targets = (adapter.uids_before(before.date()) if before is not None
+                   else adapter.message_uids(expected=exists))
+
+        total = len(targets)
+        log.warning("Cancellazione diretta: account %s, cartella %s, %s messaggi, "
+                    "nessuna verifica sull'archivio", account_id, folder_name, total)
+        result = {"folder": folder_name, "before": before.isoformat() if before else None,
+                  "found": total}
+        if not total:
+            return {**result, "deleted": 0}
+
+        deleted = 0
+        for offset in range(0, total, PURGE_BATCH):
+            if should_cancel and should_cancel():
+                return {**result, "deleted": deleted, "cancelled": True}
+            batch = targets[offset:offset + PURGE_BATCH]
+            adapter.delete_uids(batch)
+            deleted += len(batch)
+            report(4 + int(deleted / total * 94),
+                   f"Cancellati {deleted} di {total} messaggi da «{folder_name}».")
+        report(100, f"Cancellati {deleted} messaggi da «{folder_name}».")
+        return {**result, "deleted": deleted}
+    finally:
+        try:
+            adapter.logout()
+        except Exception:
+            log.warning("Logout dopo la cancellazione non riuscito", exc_info=True)
+
+
 def _archived_uids(db, account: Account, folder_name: str) -> dict[str, datetime | None]:
     """Every archived UID of the folder, with the date the message carries.
 

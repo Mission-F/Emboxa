@@ -221,3 +221,98 @@ def test_the_preview_counts_what_the_cutoff_would_do():
     cut = purge.purge_preview(account_id, before=datetime(2024, 1, 1))["folders"][0]
     assert (cut["deletable"], cut["kept"]) == (2, 2)
     assert cut["oldest"] == datetime(2020, 5, 1) and cut["newest"] == datetime(2026, 5, 1)
+
+
+class LiveServer(FakeServer):
+    """A mailbox with mail the archive has never seen — the case this route exists for."""
+
+    def __init__(self, uids, before_uids=None):
+        super().__init__(uids)
+        self.before_uids = before_uids
+        self.searched = []
+
+    def list_folders(self, root=None):
+        from app.imap_adapter import RemoteFolder
+        return [RemoteFolder(flags=[], delimiter="/", name="Inbox"),
+                RemoteFolder(flags=["\\Noselect"], delimiter="/", name="Contenitore")]
+
+    def uids_before(self, cutoff):
+        self.searched.append(cutoff)
+        return list(self.before_uids or [])
+
+
+def test_direct_deletion_ignores_the_archive_entirely(monkeypatch):
+    """The whole point: none of these UIDs are in the archive, and all of them go anyway."""
+    run_migrations()
+    account_id, _email = _mailbox()
+    server = LiveServer([7001, 7002, 7003, 7004])
+    monkeypatch.setattr(purge, "_connect_with_retry", lambda _a, _p: server)
+    monkeypatch.setattr(purge, "decrypt_secret", lambda _v: "pw")
+
+    result = purge.purge_folder_direct(account_id, "Inbox")
+
+    assert sorted(server.deleted) == [7001, 7002, 7003, 7004]
+    assert result["deleted"] == 4 and server.uids == []
+
+
+def test_direct_deletion_still_goes_in_batches(monkeypatch):
+    run_migrations()
+    account_id, _email = _mailbox()
+    server = LiveServer(list(range(7000, 7450)))
+    monkeypatch.setattr(purge, "_connect_with_retry", lambda _a, _p: server)
+    monkeypatch.setattr(purge, "decrypt_secret", lambda _v: "pw")
+
+    purge.purge_folder_direct(account_id, "Inbox")
+
+    assert server.batches == [200, 200, 50]
+
+
+def test_direct_deletion_with_a_cutoff_asks_the_server(monkeypatch):
+    """With no archive to consult, the only date available is the server's own."""
+    run_migrations()
+    account_id, _email = _mailbox()
+    server = LiveServer([7001, 7002, 7003], before_uids=[7001])
+    monkeypatch.setattr(purge, "_connect_with_retry", lambda _a, _p: server)
+    monkeypatch.setattr(purge, "decrypt_secret", lambda _v: "pw")
+
+    result = purge.purge_folder_direct(account_id, "Inbox", before=datetime(2024, 1, 1))
+
+    assert server.searched == [datetime(2024, 1, 1).date()]
+    assert server.deleted == [7001] and result["deleted"] == 1
+    assert sorted(server.uids) == [7002, 7003]
+
+
+def test_listing_folders_skips_the_ones_that_cannot_hold_mail(monkeypatch):
+    run_migrations()
+    account_id, _email = _mailbox()
+    server = LiveServer([7001, 7002])
+    monkeypatch.setattr(purge, "_connect_with_retry", lambda _a, _p: server)
+    monkeypatch.setattr(purge, "decrypt_secret", lambda _v: "pw")
+
+    assert purge.server_folders(account_id) == {"folders": [{"name": "Inbox", "messages": 2}]}
+
+
+def test_the_direct_api_needs_both_confirmations_and_the_typed_name():
+    run_migrations()
+    account_id, email = _mailbox()
+    with TestClient(app) as client:
+        headers = login(client, email, "secure-purge-password")
+        body = {"folder": "Inbox", "confirm_folder": "Inbox",
+                "understood_irreversible": True, "understood_no_backup_check": True}
+        assert client.post(f"/api/accounts/{account_id}/purge-direct", headers=headers,
+                           json={**body, "understood_no_backup_check": False}).status_code == 400
+        assert client.post(f"/api/accounts/{account_id}/purge-direct", headers=headers,
+                           json={**body, "understood_irreversible": False}).status_code == 400
+        assert client.post(f"/api/accounts/{account_id}/purge-direct", headers=headers,
+                           json={**body, "confirm_folder": "inbox"}).status_code == 400
+
+
+def test_the_direct_api_is_closed_to_the_standard_plan():
+    run_migrations()
+    account_id, email = _mailbox(plan="STANDARD")
+    with TestClient(app) as client:
+        headers = login(client, email, "secure-purge-password")
+        assert client.get(f"/api/accounts/{account_id}/server-folders").status_code == 403
+        assert client.post(f"/api/accounts/{account_id}/purge-direct", headers=headers, json={
+            "folder": "Inbox", "confirm_folder": "Inbox", "understood_irreversible": True,
+            "understood_no_backup_check": True}).status_code == 403

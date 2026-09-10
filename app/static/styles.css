@@ -937,3 +937,8 @@ label.purge-row:hover { background: var(--surface-secondary); }
 .transfer-folder b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .transfer-folder em { margin-left: auto; font-style: normal; font-size: var(--fs-micro); color: var(--text-tertiary); white-space: nowrap; }
 .transfer-folder.empty { opacity: .45; }
+.direct-purge .panel-heading { border-bottom: 2px solid var(--danger); }
+.danger-eyebrow { color: var(--danger) !important; font-weight: 700; letter-spacing: .08em; }
+.direct-row { grid-template-columns: 1fr 110px 90px; }
+.direct-warning { border-width: 2px; }
+.direct-warning h3 { font-size: var(--fs-h2); }
