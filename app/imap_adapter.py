@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import ssl
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,6 +11,8 @@ from typing import Iterator
 from imapclient import IMAPClient
 
 from .config import IMAP_TIMEOUT_SECONDS
+
+log = logging.getLogger("emboxa.imap")
 
 
 def _value(mapping: dict, name: str, default=None):
@@ -194,11 +197,30 @@ class StandardIMAPAdapter:
         return len(uids)
 
     def has_message_id(self, message_id: str) -> bool:
-        """Check the selected folder for a duplicate without downloading messages."""
+        """Check the selected folder for a duplicate without downloading messages.
+
+        A Message-ID is whatever the sending system wrote, and some of them contain characters a
+        server will not accept inside a SEARCH — Yahoo answers
+        `[CLIENTBUG] UID SEARCH Command arguments invalid` to an id like `<ADR5000026681@*>`.
+        That is an answer about one header, not a reason to abandon a restore of seven thousand
+        messages, so a refused search means "not known to be a duplicate" and the message gets
+        delivered. A duplicate is recoverable; a restore that stops at message 2 368 is not.
+        """
         assert self.client
-        if not message_id:
+        value = (message_id or "").strip()
+        if not value:
             return False
-        return bool(self.client.search(["HEADER", "Message-ID", message_id]))
+        try:
+            # Built as one pre-quoted command on purpose. Given a list, imapclient quotes an
+            # argument only when it holds a backslash, a quote or a space — and a Message-ID like
+            # `<ADR5000026681@*>` holds none of those, so it went out bare and `<` and `*` are not
+            # legal in an IMAP atom. Quoting it here is what makes the command valid.
+            escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+            return bool(self.client.search(f'HEADER Message-ID "{escaped}"'))
+        except Exception as error:
+            log.warning("SEARCH per Message-ID %r rifiutata dal server (%s): tratto il messaggio "
+                        "come non presente", value[:120], error)
+            return False
 
     def append_message(
         self, folder: str, raw: bytes, flags: list[str] | None = None, internal_date: datetime | None = None

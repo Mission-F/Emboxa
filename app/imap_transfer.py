@@ -87,6 +87,60 @@ def _within_window(job: IMAPTransferJob):
     return clauses
 
 
+# A restore of tens of thousands of messages talks to someone else's server for hours. Timeouts
+# and dropped connections are part of that, not a reason to throw away everything already
+# delivered — the run that prompted this died at message 1 728 of 7 266 on a read timeout.
+DELIVER_ATTEMPTS = 3
+DELIVER_BACKOFF_SECONDS = 2
+
+
+def _deliver_one(adapter, job: IMAPTransferJob, account, snapshot, message: Message) -> bool:
+    """Put one message in the destination. False when it could not be delivered at all.
+
+    A failure here costs one message and is counted; it never ends the job. The alternative —
+    which is what this used to do — is that a single unreadable Message-ID or one slow APPEND
+    discards thousands of successful deliveries and leaves the mailbox half restored.
+    """
+    raw_path = safe_resolve(snapshot_root(account.archive_uuid, snapshot.snapshot_uuid),
+                            message.raw_relpath)
+    if not raw_path.is_file():
+        log.warning("Messaggio %s: file mancante nell'archivio (%s)", message.id, message.raw_relpath)
+        return False
+
+    if job.skip_duplicates and message.message_id:
+        try:
+            if adapter.has_message(message.message_id):
+                job.skipped_messages += 1
+                return True
+        except Exception as error:
+            # A destination that will not answer a question about one header has said nothing
+            # about the message. Deliver it: a duplicate can be deleted, a gap cannot be noticed.
+            log.warning("Controllo duplicati fallito per %r: consegno comunque (%s)",
+                        (message.message_id or "")[:120], error)
+
+    for attempt in range(DELIVER_ATTEMPTS):
+        try:
+            flags = json.loads(message.flags_json or "[]")
+            adapter.deliver(raw_path.read_bytes(), flags, message.internal_date or message.date_utc)
+            return True
+        except TransferCancelled:
+            raise
+        except Exception as error:
+            last = attempt + 1 == DELIVER_ATTEMPTS
+            log.warning("Consegna del messaggio %s non riuscita (tentativo %s/%s)%s: %s",
+                        message.id, attempt + 1, DELIVER_ATTEMPTS,
+                        "" if last else ", riconnetto", error)
+            if last:
+                return False
+            try:
+                time.sleep(DELIVER_BACKOFF_SECONDS * (attempt + 1))
+                adapter.reconnect()
+            except Exception:
+                log.warning("Riconnessione non riuscita", exc_info=True)
+                return False
+    return False
+
+
 def run_transfer(job_id: int) -> None:
     db = SessionLocal()
     adapter: RestoreTarget | None = None
@@ -145,20 +199,12 @@ def run_transfer(job_id: int) -> None:
                 Message.folder_id == folder.id,
                 Message.is_deleted.is_(False),
                 *_within_window(job),
-            ).order_by(Message.id)).all()
+            ).order_by(func.coalesce(Message.date_utc, Message.internal_date).desc().nullslast(),
+                       Message.id.desc())).all()
             for message in messages:
                 _cancel_if_requested(db, job)
-                if job.skip_duplicates and message.message_id and adapter.has_message(message.message_id):
-                    job.skipped_messages += 1
-                else:
-                    raw_path = safe_resolve(
-                        snapshot_root(account.archive_uuid, snapshot.snapshot_uuid), message.raw_relpath
-                    )
-                    if not raw_path.is_file():
-                        job.failed_messages += 1
-                    else:
-                        flags = json.loads(message.flags_json or "[]")
-                        adapter.deliver(raw_path.read_bytes(), flags, message.internal_date or message.date_utc)
+                if not _deliver_one(adapter, job, account, snapshot, message):
+                    job.failed_messages += 1
                 appended += 1
                 job.processed_messages = appended
                 job.percent = min(100, round(appended * 100 / max(1, job.total_messages)))

@@ -60,6 +60,15 @@ class RestoreTarget:
     def deliver(self, raw: bytes, flags: list[str], internal_date: datetime | None) -> None:
         raise NotImplementedError
 
+    def reconnect(self) -> None:
+        """Rebuild the session after it broke, and reopen the folder that was in use.
+
+        Restores run for hours against someone else's server; a connection dropping part way
+        through is ordinary, not exceptional. Providers that hold no connection can leave this
+        alone.
+        """
+        return None
+
     def rotated_secret(self) -> str | None:
         """New secret to persist when the provider rotated it (OAuth refresh)."""
         return None
@@ -95,6 +104,17 @@ class IMAPRestoreTarget(RestoreTarget):
 
     def deliver(self, raw: bytes, flags: list[str], internal_date: datetime | None) -> None:
         self.adapter.append_message(self._folder, raw, flags, internal_date)
+
+    def reconnect(self) -> None:
+        try:
+            self.adapter.logout()
+        except Exception:
+            pass  # it is already broken; that is why we are here
+        self.adapter = StandardIMAPAdapter(self._host, self._port, self._security,
+                                           self._username, self._password)
+        self.adapter.connect()
+        if self._folder:
+            self.prepare_folder(self._folder)
 
     def logout(self) -> None:
         self.adapter.logout()

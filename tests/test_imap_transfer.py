@@ -15,13 +15,18 @@ from app.security import encrypt_secret, hash_password
 def test_imap_append_preserves_original_rfc822_bytes():
     class Client:
         def __init__(self): self.calls = []
-        def search(self, criteria): self.calls.append(("search", criteria)); return [1] if criteria[-1] == "<existing@example>" else []
+        def search(self, criteria): self.calls.append(("search", criteria)); return [1] if '"<existing@example>"' in criteria else []
         def append(self, folder, raw, flags=None, msg_time=None): self.calls.append(("append", folder, raw, flags, msg_time))
 
     adapter = StandardIMAPAdapter("imap.example.com", 993, "ssl", "user", "password")
     adapter.client = Client()
     original = b"From: sender@example.com\r\nMessage-ID: <new@example>\r\n\r\n\xfforiginal"
     assert adapter.has_message_id("<existing@example>") is True
+    # Quoted, because a Message-ID is not a legal IMAP atom and Yahoo answers an unquoted one with
+    # "[CLIENTBUG] UID SEARCH Command arguments invalid" — which used to end the whole restore.
+    assert adapter.client.calls[0] == ("search", 'HEADER Message-ID "<existing@example>"')
+    assert adapter.has_message_id("<odd@*>") is False
+    assert adapter.client.calls[-1] == ("search", 'HEADER Message-ID "<odd@*>"')
     adapter.append_message("Archive/Inbox", original, ["\\Seen", "custom"], None)
     append = adapter.client.calls[-1]
     assert append[2] == original
@@ -133,3 +138,88 @@ def test_a_restore_can_be_limited_to_chosen_folders():
 
     chosen = IMAPTransferJob(folders_json=_json.dumps(["Fatture", "Viaggi"]))
     assert set(_json.loads(chosen.folders_json)) == {"Fatture", "Viaggi"}
+
+
+class FlakyTarget:
+    """A destination that misbehaves the way the failing restore did."""
+
+    def __init__(self, fail_on=(), search_raises=()):
+        self.fail_on = set(fail_on)          # message ids whose APPEND blows up once
+        self.search_raises = set(search_raises)
+        self.delivered = []
+        self.reconnects = 0
+        self.attempted = []
+
+    def has_message(self, message_id):
+        if message_id in self.search_raises:
+            # What Yahoo answers to a Message-ID it will not accept inside a SEARCH.
+            raise RuntimeError("[CLIENTBUG] UID SEARCH Command arguments invalid")
+        return False
+
+    def deliver(self, raw, flags, internal_date):
+        self.attempted.append(raw)
+        if raw in self.fail_on:
+            self.fail_on.discard(raw)
+            raise TimeoutError("The read operation timed out")
+        self.delivered.append(raw)
+
+    def reconnect(self):
+        self.reconnects += 1
+
+
+def _message(tmp_path, index, body=b"ciao", message_id=None):
+    from app.models import Message
+    (tmp_path / f"{index}.eml").write_bytes(body)
+    item = Message(id=index, folder_id=1, imap_uid=str(index), thread_key="t",
+                   flags_json="[]", raw_relpath=f"{index}.eml", raw_sha256="x" * 64,
+                   message_id=message_id)
+    return item
+
+
+def test_a_timeout_on_one_message_does_not_end_the_restore(tmp_path, monkeypatch):
+    """The run that prompted this died at 1 728 of 7 266 and kept nothing."""
+    import app.imap_transfer as transfer
+    from app.models import Account, IMAPTransferJob, Snapshot
+
+    monkeypatch.setattr(transfer, "snapshot_root", lambda *_a: tmp_path)
+    monkeypatch.setattr(transfer.time, "sleep", lambda _s: None)
+    account = Account(archive_uuid="u"); snapshot = Snapshot(snapshot_uuid="s")
+    job = IMAPTransferJob(skip_duplicates=False)
+    target = FlakyTarget(fail_on=[b"secondo"])
+
+    first = transfer._deliver_one(target, job, account, snapshot, _message(tmp_path, 1, b"primo"))
+    second = transfer._deliver_one(target, job, account, snapshot, _message(tmp_path, 2, b"secondo"))
+
+    assert first is True and second is True, "the retry delivered it after reconnecting"
+    assert target.delivered == [b"primo", b"secondo"]
+    assert target.reconnects == 1
+
+
+def test_a_message_id_the_server_rejects_does_not_end_the_restore(tmp_path, monkeypatch):
+    """`[CLIENTBUG] UID SEARCH Command arguments invalid` is about one header, not the job."""
+    import app.imap_transfer as transfer
+    from app.models import Account, IMAPTransferJob, Snapshot
+
+    monkeypatch.setattr(transfer, "snapshot_root", lambda *_a: tmp_path)
+    monkeypatch.setattr(transfer.time, "sleep", lambda _s: None)
+    account = Account(archive_uuid="u"); snapshot = Snapshot(snapshot_uuid="s")
+    job = IMAPTransferJob(skip_duplicates=True)
+    bad_id = "<ADR50000266814120@*>"
+    target = FlakyTarget(search_raises=[bad_id])
+
+    ok = transfer._deliver_one(target, job, account, snapshot,
+                               _message(tmp_path, 1, b"corpo", message_id=bad_id))
+
+    assert ok is True and target.delivered == [b"corpo"], "delivered rather than abandoned"
+
+
+def test_a_message_missing_from_the_archive_is_counted_not_fatal(tmp_path, monkeypatch):
+    import app.imap_transfer as transfer
+    from app.models import Account, IMAPTransferJob, Message, Snapshot
+
+    monkeypatch.setattr(transfer, "snapshot_root", lambda *_a: tmp_path)
+    account = Account(archive_uuid="u"); snapshot = Snapshot(snapshot_uuid="s")
+    absent = Message(id=9, folder_id=1, imap_uid="9", thread_key="t", flags_json="[]",
+                     raw_relpath="non-esiste.eml", raw_sha256="x" * 64)
+
+    assert transfer._deliver_one(FlakyTarget(), IMAPTransferJob(), account, snapshot, absent) is False

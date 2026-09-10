@@ -98,7 +98,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("emboxa")
 BASE_DIR = Path(__file__).resolve().parent
-ASSET_VERSION = "20260910-1905"
+ASSET_VERSION = "20260910-2010"
 
 
 @asynccontextmanager
