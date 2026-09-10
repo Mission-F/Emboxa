@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,7 +15,7 @@ from app.security import hash_password
 from tests.test_web import login  # the suite's existing session helper
 
 
-def _mailbox(plan="PLUS", archived=3, remote=3):
+def _mailbox(plan="PLUS", archived=3, remote=3, dates=None):
     """An account with an archived folder, ready to be emptied on the server."""
     tag = uuid.uuid4().hex[:8]
     with SessionLocal() as db:
@@ -37,6 +38,7 @@ def _mailbox(plan="PLUS", archived=3, remote=3):
                            thread_key=f"t{index}", subject=f"Messaggio {index}", sender="a@b.c",
                            recipients_to="", recipients_cc="", recipients_bcc="", reply_to="",
                            headers_json="{}", text_body="corpo", flags_json="[]",
+                           date_utc=None if dates is None else dates[index],
                            raw_sha256=f"{index:064d}", raw_relpath=f"raw/{index}"))
         account.active_snapshot_id = snapshot.id
         db.commit()
@@ -87,7 +89,7 @@ def test_only_messages_the_archive_holds_are_deleted(monkeypatch):
     result = purge.purge_folder(account_id, "Inbox")
 
     assert sorted(server.deleted) == [1000, 1001, 1002]
-    assert result == {"deleted": 3, "untouched": 1, "folder": "Inbox"}
+    assert result == {"deleted": 3, "untouched": 1, "folder": "Inbox", "before": None}
     assert server.uids == [9999], "the message that arrived later is still on the server"
     assert server.selected_write == ["Inbox", "Inbox"], "opened read-write, never read-only"
 
@@ -162,3 +164,60 @@ def test_the_api_is_closed_to_the_standard_plan():
         assert client.post(f"/api/accounts/{account_id}/purge", headers=headers, json={
             "folder": "Inbox", "confirm_folder": "Inbox",
             "verified_backup": True, "understood_irreversible": True}).status_code == 403
+
+
+def _dated_mailbox():
+    """Three messages from 2020, 2023 and 2026, plus a fourth the archive has no date for."""
+    return _mailbox(archived=4, remote=4, dates=[
+        datetime(2020, 5, 1), datetime(2023, 5, 1), datetime(2026, 5, 1), None])
+
+
+def test_a_cutoff_keeps_everything_from_that_date_on(monkeypatch):
+    run_migrations()
+    account_id, _email = _dated_mailbox()
+    server = FakeServer([1000, 1001, 1002, 1003])
+    monkeypatch.setattr(purge, "_connect_with_retry", lambda _a, _p: server)
+    monkeypatch.setattr(purge, "decrypt_secret", lambda _v: "pw")
+
+    result = purge.purge_folder(account_id, "Inbox", before=datetime(2024, 1, 1))
+
+    assert sorted(server.deleted) == [1000, 1001], "2020 and 2023 go"
+    assert sorted(server.uids) == [1002, 1003], "2026 stays, and so does the undated one"
+    assert result["deleted"] == 2 and result["untouched"] == 2
+
+
+def test_a_message_the_archive_has_no_date_for_is_never_deleted_by_a_cutoff(monkeypatch):
+    """Not knowing when something is dated is not a reason to decide it is old."""
+    run_migrations()
+    account_id, _email = _dated_mailbox()
+    server = FakeServer([1003])
+    monkeypatch.setattr(purge, "_connect_with_retry", lambda _a, _p: server)
+    monkeypatch.setattr(purge, "decrypt_secret", lambda _v: "pw")
+
+    result = purge.purge_folder(account_id, "Inbox", before=datetime(2030, 1, 1))
+
+    assert server.deleted == [] and server.uids == [1003]
+    assert result["deleted"] == 0
+
+
+def test_without_a_cutoff_the_undated_message_still_goes(monkeypatch):
+    """The cutoff is what makes a date necessary; emptying the folder does not."""
+    run_migrations()
+    account_id, _email = _dated_mailbox()
+    server = FakeServer([1000, 1001, 1002, 1003])
+    monkeypatch.setattr(purge, "_connect_with_retry", lambda _a, _p: server)
+    monkeypatch.setattr(purge, "decrypt_secret", lambda _v: "pw")
+
+    assert purge.purge_folder(account_id, "Inbox")["deleted"] == 4
+
+
+def test_the_preview_counts_what_the_cutoff_would_do():
+    run_migrations()
+    account_id, _email = _dated_mailbox()
+
+    whole = purge.purge_preview(account_id)["folders"][0]
+    assert (whole["deletable"], whole["kept"], whole["undated"]) == (4, 0, 1)
+
+    cut = purge.purge_preview(account_id, before=datetime(2024, 1, 1))["folders"][0]
+    assert (cut["deletable"], cut["kept"]) == (2, 2)
+    assert cut["oldest"] == datetime(2020, 5, 1) and cut["newest"] == datetime(2026, 5, 1)

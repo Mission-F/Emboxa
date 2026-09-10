@@ -915,3 +915,15 @@ label.purge-row:hover { background: var(--surface-secondary); }
 .purge-warning p { margin: 0; font-size: var(--fs-small); }
 .purge-check { display: flex; align-items: flex-start; gap: var(--s-2); font-size: var(--fs-small); line-height: 1.45; }
 .purge-check input { margin-top: 2px; flex: 0 0 auto; }
+.purge-before { padding: var(--s-3); border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-secondary); }
+.purge-before input { max-width: 220px; }
+.purge-range { font-style: normal; font-size: var(--fs-micro); color: var(--text-tertiary); white-space: nowrap; }
+.purge-delete-count { font-weight: 600; color: var(--danger); }
+.purge-summary { margin: 0; padding: var(--s-3); border-radius: var(--r-sm); background: var(--surface-secondary); font-size: var(--fs-small); }
+.purge-state .muted { color: var(--text-tertiary); font-weight: 400; }
+.transfer-window { margin-top: var(--s-4); padding: var(--s-3); border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-secondary); }
+.transfer-window legend { padding: 0 6px; font-size: var(--fs-small); font-weight: 600; color: var(--heading); }
+.transfer-window p { margin: 0 0 var(--s-2); font-size: var(--fs-micro); }
+.transfer-window-fields { display: flex; gap: var(--s-3); flex-wrap: wrap; }
+.transfer-window-fields label { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-small); }
+.transfer-window-fields input { max-width: 190px; }

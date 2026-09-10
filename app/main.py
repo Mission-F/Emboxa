@@ -97,7 +97,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("emboxa")
 BASE_DIR = Path(__file__).resolve().parent
-ASSET_VERSION = "20260910-1620"
+ASSET_VERSION = "20260910-1735"
 
 
 @asynccontextmanager
@@ -447,6 +447,9 @@ class IMAPTransferPayload(BaseModel):
     single_folder: str | None = Field(default=None, max_length=500)
     mappings: dict[str, str] = Field(default_factory=dict)
     skip_duplicates: bool = True
+    # Optional window: transfer only the messages dated inside it.
+    date_from: datetime | None = None
+    date_to: datetime | None = None
 
 
 class MboxLinkPayload(BaseModel):
@@ -1783,14 +1786,35 @@ def _restore_destinations(db: Session, user: User) -> list[dict]:
 
 @app.get("/api/accounts/{account_id}/transfer-preview", dependencies=[Depends(current_user)])
 def transfer_preview(
-    account_id: int, snapshot_id: int | None = None, user: User = Depends(current_user), db: Session = Depends(get_db)
+    account_id: int, snapshot_id: int | None = None, date_from: datetime | None = None,
+    date_to: datetime | None = None, user: User = Depends(current_user), db: Session = Depends(get_db)
 ):
     account, snapshot = _active_snapshot(db, account_id, snapshot_id)
     folders = db.scalars(select(Folder).where(Folder.snapshot_id == snapshot.id).order_by(Folder.name)).all()
+    when = func.coalesce(Message.date_utc, Message.internal_date)
+    window = [clause for clause in (when >= date_from if date_from else None,
+                                    when <= date_to if date_to is not None else None) if clause is not None]
+
+    def in_window(folder_id: int) -> int:
+        if not window:
+            return None
+        return db.scalar(select(func.count()).where(
+            Message.folder_id == folder_id, Message.is_deleted.is_(False), *window)) or 0
+
+    oldest, newest, undated = db.execute(select(
+        func.min(when), func.max(when),
+        func.count().filter(Message.date_utc.is_(None), Message.internal_date.is_(None)),
+    ).where(Message.snapshot_id == snapshot.id, Message.is_deleted.is_(False))).one()
+    selected = db.scalar(select(func.count()).where(
+        Message.snapshot_id == snapshot.id, Message.is_deleted.is_(False), *window)) or 0
+
     return {
         "account": {"id": account.id, "display_name": account.display_name},
         "snapshot": {"id": snapshot.id, "messages": snapshot.message_count, "size": snapshot.archive_size},
-        "folders": [{"id": folder.id, "name": folder.name, "messages": folder.message_count} for folder in folders],
+        "range": {"oldest": oldest, "newest": newest, "undated": int(undated or 0)},
+        "selected": selected if window else snapshot.message_count,
+        "folders": [{"id": folder.id, "name": folder.name, "messages": folder.message_count,
+                     "selected": in_window(folder.id)} for folder in folders],
         "destinations": _restore_destinations(db, user),
         "quota": _transfer_quota(db, user),
     }
@@ -1806,6 +1830,8 @@ def create_transfer(
         raise HTTPException(409, f"Limite mensile di ripristini raggiunto ({quota['limit']}). La quota si azzera il mese prossimo.")
     if payload.mode == "single" and not (payload.single_folder or "").strip():
         raise HTTPException(422, "Scegli una cartella di destinazione")
+    if payload.date_from and payload.date_to and payload.date_from > payload.date_to:
+        raise HTTPException(422, "La data iniziale è successiva a quella finale")
     source_folders = {item.name for item in db.scalars(select(Folder).where(Folder.snapshot_id == snapshot.id)).all()}
     mappings = {str(key).strip(): str(value).strip() for key, value in payload.mappings.items()
                 if str(key).strip() in source_folders and str(value).strip()}
@@ -1824,6 +1850,7 @@ def create_transfer(
         encrypted_password=None if credentials["account"] else encrypt_secret(credentials["password"]),
         mode=payload.mode, single_folder=(payload.single_folder or "").strip() or None,
         mappings_json=json.dumps(mappings, ensure_ascii=False), skip_duplicates=payload.skip_duplicates,
+        date_from=payload.date_from, date_to=payload.date_to,
         total_messages=snapshot.message_count, quota_period=quota["period"], status="queued",
     )
     db.add(job)
@@ -2189,7 +2216,8 @@ def _set_maintenance_job(job_id: str, **changes) -> None:
             job.update(changes)
 
 
-def _run_maintenance_job(job_id: str, kind: str, account_id: int, folder: str | None = None) -> None:
+def _run_maintenance_job(job_id: str, kind: str, account_id: int, folder: str | None = None,
+                         before: datetime | None = None) -> None:
     _set_maintenance_job(job_id, status="running", percent=5, detail="Avvio…")
     try:
         def progress(percent: int, detail: str) -> None:
@@ -2203,9 +2231,10 @@ def _run_maintenance_job(job_id: str, kind: str, account_id: int, folder: str | 
         if kind == "clear":
             clear_account_archive(account_id, progress=progress)
         elif kind == "purge":
-            result = purge_folder(account_id, folder or "", progress=progress,
+            result = purge_folder(account_id, folder or "", before=before, progress=progress,
                                   should_cancel=cancelled)
             summary = (f"Cancellati {result['deleted']} messaggi da «{result['folder']}»"
+                       + (f" precedenti al {before:%d/%m/%Y}" if before else "")
                        + (f"; {result['untouched']} non erano nell'archivio e sono stati lasciati"
                           if result["untouched"] else "")
                        + (" (interrotto)" if result.get("cancelled") else "") + ".")
@@ -2220,7 +2249,7 @@ def _run_maintenance_job(job_id: str, kind: str, account_id: int, folder: str | 
 
 
 def _start_maintenance_job(kind: str, account_id: int, user: User, db: Session,
-                           folder: str | None = None) -> dict:
+                           folder: str | None = None, before: datetime | None = None) -> dict:
     _cleanup_maintenance_jobs()
     account = _account_or_404(db, account_id)
     if account.owner_id != user.id:
@@ -2238,7 +2267,8 @@ def _start_maintenance_job(kind: str, account_id: int, user: User, db: Session,
             "user_id": user.id,
             "account_id": account_id,
             "label": f"{MAINTENANCE_LABELS[kind]} · {account.display_name}"
-                     + (f" · {folder}" if folder else ""),
+                     + (f" · {folder}" if folder else "")
+                     + (f" · prima del {before:%d/%m/%Y}" if before else ""),
             "status": "queued",
             "percent": 1,
             "detail": "In coda.",
@@ -2249,7 +2279,7 @@ def _start_maintenance_job(kind: str, account_id: int, user: User, db: Session,
         }
         MAINTENANCE_JOBS[job_id] = job
         response = dict(job)
-    threading.Thread(target=_run_maintenance_job, args=(job_id, kind, account_id, folder),
+    threading.Thread(target=_run_maintenance_job, args=(job_id, kind, account_id, folder, before),
                      name=f"emboxa-{kind}-{job_id[:8]}", daemon=True).start()
     return response
 
@@ -2267,15 +2297,15 @@ def remove_account(account_id: int, response: Response, user: User = Depends(cur
 
 
 @app.get("/api/accounts/{account_id}/purge-preview", dependencies=[Depends(current_user)])
-def purge_preview_endpoint(account_id: int, user: User = Depends(current_user),
-                           db: Session = Depends(get_db)):
+def purge_preview_endpoint(account_id: int, before: datetime | None = None,
+                           user: User = Depends(current_user), db: Session = Depends(get_db)):
     account = _account_or_404(db, account_id)
     if account.owner_id != user.id:
         raise HTTPException(404, "Account non trovato")
     if user.plan != "PLUS":
         raise HTTPException(403, "Lo svuotamento della casella è riservato al piano PLUS.")
     try:
-        return purge_preview(account_id)
+        return purge_preview(account_id, before=before)
     except PurgeRefused as error:
         raise HTTPException(409, str(error)) from error
 
@@ -2287,6 +2317,8 @@ class PurgePayload(BaseModel):
     confirm_folder: str = Field(min_length=1, max_length=1000)
     verified_backup: bool = False
     understood_irreversible: bool = False
+    # Keep everything from this moment on. Absent means the whole folder.
+    before: datetime | None = None
 
 
 @app.post("/api/accounts/{account_id}/purge", dependencies=[Depends(csrf_guard)])
@@ -2306,7 +2338,7 @@ def purge_folder_endpoint(account_id: int, payload: PurgePayload, response: Resp
     # Refuse here too, before a job exists, so a folder the archive does not cover fails as a
     # plain answer instead of as a job that dies a second later.
     try:
-        preview = purge_preview(account_id)
+        preview = purge_preview(account_id, before=payload.before)
     except PurgeRefused as error:
         raise HTTPException(409, str(error)) from error
     target = next((item for item in preview["folders"] if item["name"] == payload.folder), None)
@@ -2315,9 +2347,13 @@ def purge_folder_endpoint(account_id: int, payload: PurgePayload, response: Resp
     if not target["complete"]:
         raise HTTPException(409, f"«{payload.folder}» non è archiviata per intero "
                                  f"({target['archived']} di {target['remote']}). Rifai il backup.")
+    if payload.before is not None and not target["deletable"]:
+        raise HTTPException(409, f"Nessun messaggio di «{payload.folder}» è precedente a quella "
+                                 "data: non ci sarebbe niente da cancellare.")
     response.status_code = 202
     return _maintenance_job_response(
-        _start_maintenance_job("purge", account_id, user, db, folder=payload.folder))
+        _start_maintenance_job("purge", account_id, user, db, folder=payload.folder,
+                               before=payload.before))
 
 
 @app.post("/api/maintenance/jobs/{job_id}/cancel", dependencies=[Depends(csrf_guard)])

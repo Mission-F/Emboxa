@@ -415,30 +415,39 @@ async function openPurgeDialog(accountId) {
   renderPurgeChoice(accountId, preview);
 }
 
-function renderPurgeChoice(accountId, preview) {
+function renderPurgeChoice(accountId, preview, before = '') {
   const folders = preview.folders || [];
   const content = $('#purge-content');
   if (!folders.length) {
     content.innerHTML = `<p class="muted">${t('purgeNoFolders')}</p>`;
     return;
   }
+  const chosenBefore = before;
   content.innerHTML = `
     <p class="muted">${t('purgeBasedOn')} <b>${date(preview.snapshot_at)}</b></p>
+    <label class="field purge-before">
+      <span>${t('purgeBeforeLabel')}</span>
+      <input type="date" id="purge-before" value="${esc(chosenBefore)}">
+      <small class="muted">${t('purgeBeforeHint')}</small>
+    </label>
     <div class="purge-table" role="table">
       <div class="purge-row purge-head" role="row">
-        <span>${t('purgeFolderCol')}</span><span>${t('purgeArchivedCol')}</span>
-        <span>${t('purgeRemoteCol')}</span><span></span>
+        <span>${t('purgeFolderCol')}</span><span>${t('purgeDeletableCol')}</span>
+        <span>${t('purgeKeptCol')}</span><span></span>
       </div>
       ${folders.map(folder => `
-        <label class="purge-row ${folder.complete ? '' : 'incomplete'}" role="row">
+        <label class="purge-row ${folder.complete ? '' : 'incomplete'}" role="row"
+               title="${t('purgeRangeLabel')}: ${folder.oldest ? dateOnly(folder.oldest) : '—'} → ${folder.newest ? dateOnly(folder.newest) : '—'}${
+                 folder.undated ? ` · ${folder.undated} ${t('purgeUndatedNote')}` : ''}">
           <span class="purge-name">
-            <input type="radio" name="purge-folder" value="${esc(folder.name)}" ${folder.complete ? '' : 'disabled'}>
+            <input type="radio" name="purge-folder" value="${esc(folder.name)}" ${folder.complete && folder.deletable ? '' : 'disabled'}>
             <b>${esc(folder.name)}</b>
+            <em class="purge-range">${folder.oldest ? dateOnly(folder.oldest) : '—'} → ${folder.newest ? dateOnly(folder.newest) : '—'}</em>
           </span>
-          <span>${numberFmt(folder.archived)}</span>
-          <span>${folder.remote == null ? '—' : numberFmt(folder.remote)}</span>
+          <span class="purge-delete-count">${numberFmt(folder.deletable)}</span>
+          <span>${numberFmt(folder.kept)}</span>
           <span class="purge-state">${folder.complete
-            ? `<em class="ok">${t('purgeComplete')}</em>`
+            ? (folder.deletable ? `<em class="ok">${t('purgeComplete')}</em>` : `<em class="muted">${t('purgeNothingBefore')}</em>`)
             : `<em class="bad">${t('purgeIncomplete')}</em>`}</span>
         </label>`).join('')}
     </div>
@@ -451,20 +460,35 @@ function renderPurgeChoice(accountId, preview) {
 
   content.querySelectorAll('input[name="purge-folder"]').forEach(radio =>
     radio.addEventListener('change', () => { $('#purge-next').disabled = false; }));
+
+  // Re-ask the server rather than counting in the browser: the dates that decide this live in the
+  // archive, and the number shown here has to be the number the job will actually act on.
+  $('#purge-before').addEventListener('change', async event => {
+    const value = event.target.value;
+    const query = value ? `?before=${encodeURIComponent(`${value}T00:00:00`)}` : '';
+    try {
+      renderPurgeChoice(accountId, await api(`/api/accounts/${accountId}/purge-preview${query}`), value);
+    } catch (error) { toast(error.message, 'error'); }
+  });
+
   $('#purge-next').addEventListener('click', () => {
     const chosen = content.querySelector('input[name="purge-folder"]:checked');
-    if (chosen) renderPurgeConfirm(accountId, preview, chosen.value);
+    if (chosen) renderPurgeConfirm(accountId, preview, chosen.value, chosenBefore);
   });
 }
 
-function renderPurgeConfirm(accountId, preview, folderName) {
+function renderPurgeConfirm(accountId, preview, folderName, before = '') {
   const folder = preview.folders.find(item => item.name === folderName);
   $('#purge-content').innerHTML = `
     <div class="purge-warning">
       <h3>${t('purgeWarnTitle')}</h3>
       <p>${t('purgeWarnBody')}</p>
     </div>
-    <p><b>${t('purgeSelected')}:</b> ${esc(folderName)} — ${numberFmt(folder.archived)} ${t('messagesUnit')}</p>
+    <p><b>${t('purgeSelected')}:</b> ${esc(folderName)}</p>
+    <p class="purge-summary">${before
+      ? `${t('purgeSummaryBefore')} <b>${dateOnly(`${before}T00:00:00`)}</b> — <b>${numberFmt(folder.deletable)}</b> ${t('messagesUnit')}, ${numberFmt(folder.kept)} ${t('purgeKeptCol').toLowerCase()}`
+      : `${t('purgeSummaryAll')} <b>${numberFmt(folder.deletable)}</b> ${t('messagesUnit')}`}</p>
+    ${folder.undated ? `<p class="muted small">${numberFmt(folder.undated)} ${t('purgeUndatedNote')}</p>` : ''}
     <label class="purge-check"><input type="checkbox" id="purge-check-backup"> ${t('purgeCheckBackup')}</label>
     <label class="purge-check"><input type="checkbox" id="purge-check-irreversible"> ${t('purgeCheckIrreversible')}</label>
     <label class="field"><span>${t('purgeTypeName')}</span>
@@ -483,13 +507,14 @@ function renderPurgeConfirm(accountId, preview, folderName) {
   };
   ['#purge-check-backup', '#purge-check-irreversible', '#purge-confirm-name']
     .forEach(selector => $(selector).addEventListener('input', gate));
-  $('#purge-back').addEventListener('click', () => renderPurgeChoice(accountId, preview));
+  $('#purge-back').addEventListener('click', () => renderPurgeChoice(accountId, preview, before));
   $('#purge-go').addEventListener('click', async () => {
     $('#purge-go').disabled = true;
     try {
       const job = await api(`/api/accounts/${accountId}/purge`, {method: 'POST', body: JSON.stringify({
         folder: folderName, confirm_folder: $('#purge-confirm-name').value.trim(),
         verified_backup: true, understood_irreversible: true,
+        before: before ? `${before}T00:00:00` : null,
       })});
       $('#purge-dialog').close();
       toast(t('purgeStarted'));

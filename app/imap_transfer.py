@@ -6,7 +6,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from .backup import snapshot_root
 from .database import SessionLocal
@@ -71,6 +71,22 @@ def _cancel_if_requested(db, job: IMAPTransferJob) -> None:
         raise TransferCancelled()
 
 
+def _within_window(job: IMAPTransferJob):
+    """Clauses limiting the transfer to the job's date window, if it has one.
+
+    The date is the archived one, coalescing the header date with what the server reported. A
+    message the archive has no date for cannot be shown to fall inside a window, so a window
+    leaves it out — and the preview says how many those are before anyone starts.
+    """
+    clauses = []
+    when = func.coalesce(Message.date_utc, Message.internal_date)
+    if job.date_from is not None:
+        clauses.append(when >= job.date_from)
+    if job.date_to is not None:
+        clauses.append(when <= job.date_to)
+    return clauses
+
+
 def run_transfer(job_id: int) -> None:
     db = SessionLocal()
     adapter: RestoreTarget | None = None
@@ -102,7 +118,7 @@ def run_transfer(job_id: int) -> None:
         job.throughput = 0
         job.eta_seconds = None
         job.total_messages = db.query(Message).filter(
-            Message.snapshot_id == snapshot.id, Message.is_deleted.is_(False)
+            Message.snapshot_id == snapshot.id, Message.is_deleted.is_(False), *_within_window(job)
         ).count()
         db.commit()
 
@@ -120,6 +136,7 @@ def run_transfer(job_id: int) -> None:
                 Message.snapshot_id == snapshot.id,
                 Message.folder_id == folder.id,
                 Message.is_deleted.is_(False),
+                *_within_window(job),
             ).order_by(Message.id)).all()
             for message in messages:
                 _cancel_if_requested(db, job)

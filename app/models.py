@@ -233,6 +233,9 @@ class IMAPTransferJob(Base):
     single_folder: Mapped[str | None] = mapped_column(String(500), nullable=True)
     mappings_json: Mapped[str] = mapped_column(Text, default="{}")
     skip_duplicates: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Optional window on the archive: transfer only what falls between these. Absent means all of it.
+    date_from: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    date_to: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="queued", index=True)
     current_folder: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     processed_messages: Mapped[int] = mapped_column(Integer, default=0)

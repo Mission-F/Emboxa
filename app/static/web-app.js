@@ -155,7 +155,30 @@ document.querySelector('#transfer-back').addEventListener('click',()=>showTransf
 document.querySelector('#nav-transfers').addEventListener('click',()=>openTransfer());
 document.querySelector('#transfer-test').addEventListener('click',async()=>{ const result=document.querySelector('#transfer-test-result'); result.textContent=t('verifyingConnection'); try{const data=await api('/api/imap-transfer/test',{method:'POST',body:JSON.stringify({destination:transferDestination()})});result.textContent=`${t('connectionOkNoQuota')} · ${data.folders} ${t('folderPlural')} · ${t('noQuotaConsumed')}`;result.className='success';}catch(error){result.textContent=error.message;result.className='danger-text';} });
 document.querySelector('#transfer-jobs').addEventListener('click',async event=>{const button=event.target.closest('[data-cancel-transfer]');if(!button)return;try{await api(`/api/imap-transfers/${button.dataset.cancelTransfer}/cancel`,{method:'POST'});toast(t('toastCancelRestoreRequested'));await Promise.all([loadTransferJobs(),loadWebUsage()]);}catch(error){toast(error.message,'error');}});
-transferForm.addEventListener('submit',async event=>{event.preventDefault();const values=Object.fromEntries(new FormData(transferForm));transferStatus.textContent=t('verifyingAndQueueing');try{const result=await api(`/api/accounts/${values.account_id}/transfers`,{method:'POST',body:JSON.stringify({snapshot_id:Number(values.snapshot_id),destination:transferDestination(),mode:values.mode,single_folder:values.mode==='single'?values.single_folder:null,mappings:{},skip_duplicates:Boolean(values.skip_duplicates)})});toast(`${t('restoreNumberLabel')} #${result.job.id} ${t('toastRestoreQueued')}`);showTransferStep(4);await Promise.all([loadTransferJobs(),loadWebUsage()]);}catch(error){transferStatus.textContent=error.message;}});
+transferForm.addEventListener('submit',async event=>{event.preventDefault();const values=Object.fromEntries(new FormData(transferForm));transferStatus.textContent=t('verifyingAndQueueing');try{const result=await api(`/api/accounts/${values.account_id}/transfers`,{method:'POST',body:JSON.stringify({snapshot_id:Number(values.snapshot_id),destination:transferDestination(),mode:values.mode,single_folder:values.mode==='single'?values.single_folder:null,mappings:{},skip_duplicates:Boolean(values.skip_duplicates),date_from:values.date_from?`${values.date_from}T00:00:00`:null,date_to:values.date_to?`${values.date_to}T23:59:59`:null})});toast(`${t('restoreNumberLabel')} #${result.job.id} ${t('toastRestoreQueued')}`);showTransferStep(4);await Promise.all([loadTransferJobs(),loadWebUsage()]);}catch(error){transferStatus.textContent=error.message;}});
 
 document.querySelector('#nav-settings').addEventListener('click',loadTelegram);
 loadWebUsage(); setInterval(()=>{loadWebUsage();if(transferDialog.open&&transferStep===4)loadTransferJobs();},15000);
+
+
+/* The count has to come from the server: the dates that decide it live in the archive, and a
+   number worked out in the browser would be a guess the transfer might not honour. */
+async function refreshTransferWindow() {
+  const form = transferForm, note = document.querySelector('#transfer-window-count');
+  if (!note) return;
+  const from = form.elements.date_from?.value, to = form.elements.date_to?.value;
+  if (!from && !to) { note.textContent = t('transferWindowAll'); return; }
+  const params = new URLSearchParams({snapshot_id: form.elements.snapshot_id.value});
+  if (from) params.set('date_from', `${from}T00:00:00`);
+  if (to) params.set('date_to', `${to}T23:59:59`);
+  try {
+    const preview = await api(`/api/accounts/${form.elements.account_id.value}/transfer-preview?${params}`);
+    note.textContent = `${t('transferWindowSelected')} ${numberFmt(preview.selected)} ${t('messagesUnit')}`
+      + (preview.range.undated ? ` · ${numberFmt(preview.range.undated)} ${t('purgeUndatedNote')}` : '');
+  } catch (error) { note.textContent = error.message; }
+}
+
+['date_from', 'date_to'].forEach(name => {
+  const field = transferForm.elements[name];
+  if (field) field.addEventListener('change', refreshTransferWindow);
+});

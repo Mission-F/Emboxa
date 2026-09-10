@@ -217,6 +217,15 @@ def run_migrations() -> None:
                 )
             conn.execute(text("INSERT OR IGNORE INTO schema_migrations(version) VALUES (13)"))
 
+    if 14 not in applied:
+        log.info("Applying database migration 14 (transfer date window)")
+        with engine.begin() as conn:
+            present = {column["name"] for column in inspect(conn).get_columns("imap_transfer_jobs")}
+            for column in ("date_from", "date_to"):
+                if column not in present:
+                    conn.execute(text(f"ALTER TABLE imap_transfer_jobs ADD COLUMN {column} DATETIME"))
+            conn.execute(text("INSERT OR IGNORE INTO schema_migrations(version) VALUES (14)"))
+
     # Fail clearly if the Python SQLite build unexpectedly lacks FTS5.
     with engine.connect() as conn:
         if "message_fts" not in inspect(conn).get_table_names():

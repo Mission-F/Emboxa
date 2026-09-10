@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Callable
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from .backup import _connect_with_retry
 from .database import SessionLocal
@@ -21,7 +22,12 @@ class PurgeRefused(RuntimeError):
     """The archive does not cover what is about to be deleted."""
 
 
-def _archived_uids(db, account: Account, folder_name: str) -> set[str]:
+def _archived_uids(db, account: Account, folder_name: str) -> dict[str, datetime | None]:
+    """Every archived UID of the folder, with the date the message carries.
+
+    A dict rather than a set because a cutoff needs the date, and the date has to come from the
+    archive: the server is about to be asked to delete things, not to be trusted about them.
+    """
     snapshot = db.get(Snapshot, account.active_snapshot_id) if account.active_snapshot_id else None
     if not snapshot or snapshot.status not in {"completed", "active"}:
         raise PurgeRefused("Questo account non ha un archivio completato: non c'è nulla che copra "
@@ -35,12 +41,18 @@ def _archived_uids(db, account: Account, folder_name: str) -> set[str]:
             f"L'archivio contiene {folder.message_count} messaggi dei {folder.remote_count} che il "
             f"server dichiarava per «{folder_name}». Rifiuto di cancellare una cartella che non è "
             "stata archiviata per intero: rifai il backup e riprova.")
-    return set(db.scalars(select(Message.imap_uid).where(
-        Message.folder_id == folder.id, Message.is_deleted.is_(False))).all())
+    rows = db.execute(select(Message.imap_uid, Message.date_utc, Message.internal_date).where(
+        Message.folder_id == folder.id, Message.is_deleted.is_(False))).all()
+    return {row.imap_uid: (row.date_utc or row.internal_date) for row in rows}
 
 
-def purge_preview(account_id: int) -> dict:
-    """What emptying each folder would actually delete, without deleting anything."""
+def purge_preview(account_id: int, before: datetime | None = None) -> dict:
+    """What emptying each folder would actually delete, without deleting anything.
+
+    With `before`, the counts answer the question actually being asked: how many go, how many stay,
+    and how many have no date at all — which is a number worth seeing before choosing a cutoff
+    rather than discovering afterwards.
+    """
     with SessionLocal() as db:
         account = db.get(Account, account_id)
         if not account:
@@ -50,20 +62,35 @@ def purge_preview(account_id: int) -> dict:
             raise PurgeRefused("Questo account non ha un archivio: non c'è niente che copra la casella.")
         folders = db.scalars(select(Folder).where(Folder.snapshot_id == snapshot.id)
                              .order_by(Folder.name.collate("NOCASE"))).all()
-        return {
-            "snapshot_at": snapshot.completed_at,
-            "folders": [{
+        items = []
+        for folder in folders:
+            oldest, newest, undated = db.execute(select(
+                func.min(func.coalesce(Message.date_utc, Message.internal_date)),
+                func.max(func.coalesce(Message.date_utc, Message.internal_date)),
+                func.count().filter(Message.date_utc.is_(None), Message.internal_date.is_(None)),
+            ).where(Message.folder_id == folder.id, Message.is_deleted.is_(False))).one()
+            deletable = folder.message_count
+            if before is not None:
+                deletable = db.scalar(select(func.count()).where(
+                    Message.folder_id == folder.id, Message.is_deleted.is_(False),
+                    func.coalesce(Message.date_utc, Message.internal_date) < before)) or 0
+            items.append({
                 "name": folder.name,
                 "archived": folder.message_count,
                 "remote": folder.remote_count,
                 # Only a folder archived in full may be emptied. The count the server gave at
                 # backup time is the yardstick; anything short and the answer is no.
                 "complete": folder.remote_count is None or folder.message_count >= folder.remote_count,
-            } for folder in folders],
-        }
+                "deletable": deletable,
+                "kept": folder.message_count - deletable,
+                "undated": int(undated or 0),
+                "oldest": oldest,
+                "newest": newest,
+            })
+        return {"snapshot_at": snapshot.completed_at, "before": before, "folders": items}
 
 
-def purge_folder(account_id: int, folder_name: str,
+def purge_folder(account_id: int, folder_name: str, before: datetime | None = None,
                  progress: Callable[[int, str], None] | None = None,
                  should_cancel: Callable[[], bool] | None = None) -> dict:
     """Delete from the mail server the messages of `folder_name` that the archive already holds.
@@ -72,6 +99,9 @@ def purge_folder(account_id: int, folder_name: str,
     in the active snapshot are deleted. Mail that arrived after the backup is not in the archive,
     so it is left where it is and reported — the alternative is destroying the one copy of a
     message nobody has read yet.
+
+    `before` keeps everything from that moment on. A message the archive holds no date for is
+    always kept: not knowing when something is dated is not a reason to decide it is old.
     """
     def report(percent: int, detail: str) -> None:
         if progress:
@@ -98,26 +128,36 @@ def purge_folder(account_id: int, folder_name: str,
         adapter.select_write_folder(folder_name)
         server_uids = adapter.message_uids(expected=exists)
 
-        deletable = [uid for uid in server_uids if str(uid) in archived]
+        def in_range(uid) -> bool:
+            if str(uid) not in archived:
+                return False              # not in the archive: no copy exists, leave it alone
+            if before is None:
+                return True
+            when = archived[str(uid)]
+            return when is not None and when < before
+
+        deletable = [uid for uid in server_uids if in_range(uid)]
         untouched = len(server_uids) - len(deletable)
         log.info("Purge account %s cartella %s: %s da cancellare, %s non archiviati e lasciati",
                  account_id, folder_name, len(deletable), untouched)
         if not deletable:
-            return {"deleted": 0, "untouched": untouched, "folder": folder_name}
+            return {"deleted": 0, "untouched": untouched, "folder": folder_name,
+                    "before": before.isoformat() if before else None}
 
         deleted = 0
         total = len(deletable)
         for offset in range(0, total, PURGE_BATCH):
             if should_cancel and should_cancel():
                 return {"deleted": deleted, "untouched": untouched, "folder": folder_name,
-                        "cancelled": True}
+                        "before": before.isoformat() if before else None, "cancelled": True}
             batch = deletable[offset:offset + PURGE_BATCH]
             adapter.delete_uids(batch)
             deleted += len(batch)
             report(5 + int(deleted / total * 93),
                    f"Cancellati {deleted} di {total} messaggi da «{folder_name}».")
         report(100, f"Cancellati {deleted} messaggi da «{folder_name}».")
-        return {"deleted": deleted, "untouched": untouched, "folder": folder_name}
+        return {"deleted": deleted, "untouched": untouched, "folder": folder_name,
+                "before": before.isoformat() if before else None}
     finally:
         try:
             adapter.logout()

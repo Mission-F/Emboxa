@@ -87,3 +87,22 @@ def test_imap_transfer_quota_test_and_tenant_safety(monkeypatch):
         for job in db.query(IMAPTransferJob).filter(IMAPTransferJob.id.in_(submitted)).all():
             job.status = "cancelled"; job.cancel_requested = True; job.encrypted_password = None
         db.commit()
+
+
+def test_a_transfer_can_be_limited_to_a_date_range():
+    """"From this date to today": the archive holds everything, but a restore often should not.
+
+    The window is applied to the archived date, so a message the archive has no date for cannot be
+    shown to fall inside it and stays out — the preview reports how many those are beforehand.
+    """
+    from datetime import datetime
+
+    from app.imap_transfer import _within_window
+    from app.models import IMAPTransferJob
+
+    unbounded = IMAPTransferJob(date_from=None, date_to=None)
+    assert _within_window(unbounded) == [], "no window means the whole archive"
+
+    assert len(_within_window(IMAPTransferJob(date_from=datetime(2024, 1, 1), date_to=None))) == 1
+    assert len(_within_window(IMAPTransferJob(date_from=datetime(2024, 1, 1),
+                                              date_to=datetime(2025, 1, 1)))) == 2
