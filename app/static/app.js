@@ -711,9 +711,14 @@ $('#provider-preset').addEventListener('change', event => {
   const presets={gmail:['imap.gmail.com',993,'ssl'],outlook:['outlook.office365.com',993,'ssl'],icloud:['imap.mail.me.com',993,'ssl'],yahoo:['export.imap.mail.yahoo.com',993,'ssl'],
     'pec-aruba':['imaps.pec.aruba.it',993,'ssl','smtps.pec.aruba.it',465,'ssl'],
     'pec-legalmail':['mbox.cert.legalmail.it',993,'ssl','sendm.cert.legalmail.it',465,'ssl'],
+    // From register.it/assistenza/configura-la-pec-su-dispositivo. An older Register page still
+    // names server.pec-email.com, but it documents POP3 only; this is the current IMAP setup.
+    'pec-register':['imap.pec-email.com',993,'ssl','smtp.pec-email.com',465,'ssl'],
     'pec-other':[]};
   const form=$('#account-form'), value=presets[event.target.value];
   if(value&&value.length){form.imap_host.value=value[0];form.imap_port.value=value[1];form.security.value=value[2];}
+  // Register wants the whole PEC address as the username, for receiving and for sending.
+  if(event.target.value==='pec-register'&&form.email.value){form.imap_username.value=form.email.value;form.smtp_username.value=form.email.value;}
   if(event.target.value.startsWith('pec-')){form.is_pec.checked=true;if(value[3]){form.smtp_host.value=value[3];form.smtp_port.value=value[4];form.smtp_security.value=value[5];}}
   syncPecSection();
 });
