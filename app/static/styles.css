@@ -942,3 +942,23 @@ label.purge-row:hover { background: var(--surface-secondary); }
 .direct-row { grid-template-columns: 1fr 110px 90px; }
 .direct-warning { border-width: 2px; }
 .direct-warning h3 { font-size: var(--fs-h2); }
+
+/* ------------------------------------------------------------------ PEC client */
+.pec-section { margin: var(--s-3) 0; }
+.pec-toggle { display: flex; align-items: flex-start; gap: var(--s-3); padding: var(--s-3); border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-secondary); }
+.pec-toggle input { margin-top: 3px; }
+.pec-toggle b { display: block; color: var(--heading); font-weight: 600; }
+.pec-toggle small { color: var(--text-secondary); font-size: var(--fs-small); }
+.pec-test-row { display: flex; align-items: center; gap: var(--s-3); margin-top: var(--s-2); flex-wrap: wrap; }
+.pec-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-2); margin-top: var(--s-3); }
+.pec-toolbar small { flex-basis: 100%; font-size: var(--fs-micro); }
+.pec-badge { display: inline-block; margin: 0 6px 0 0; padding: 1px 7px; border-radius: var(--r-pill); font-size: var(--fs-micro); font-weight: 600; line-height: 1.5; vertical-align: 1px; white-space: nowrap; }
+strong .pec-badge { margin: 0 0 0 6px; }
+.pec-info { background: var(--info-soft); color: var(--info); }
+.pec-ok { background: var(--success-soft); color: var(--success); }
+.pec-bad { background: var(--danger-soft); color: var(--danger); }
+.pec-accent { background: var(--accent-soft); color: var(--accent-strong); }
+.pec-compose-dialog { width: min(720px, 94vw); }
+.pec-compose-dialog textarea { width: 100%; resize: vertical; font: inherit; }
+.receipt-choice { display: grid; gap: var(--s-2); margin: var(--s-4) 0 0; padding: 0; border: 0; }
+.receipt-choice legend { margin-bottom: var(--s-2); font-weight: 600; color: var(--heading); }

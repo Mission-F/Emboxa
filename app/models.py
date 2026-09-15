@@ -46,6 +46,16 @@ class Account(Base):
     encrypted_password: Mapped[str | None] = mapped_column(Text, nullable=True)
     root_folder: Mapped[str | None] = mapped_column(String(500), nullable=True)
     imap_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # A PEC mailbox sends as well as receives. The SMTP credentials sit beside the IMAP ones,
+    # encrypted the same way, and mean nothing unless is_pec is set.
+    is_pec: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    smtp_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    smtp_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    smtp_security: Mapped[str] = mapped_column(String(20), default="ssl")
+    smtp_username: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    encrypted_smtp_password: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The receipt the owner wants by default: completa, breve or sintetica (X-TipoRicevuta).
+    pec_receipt_type: Mapped[str] = mapped_column(String(20), default="completa")
     schedule_mode: Mapped[str] = mapped_column(String(20), default="disabled")
     schedule_interval_hours: Mapped[int | None] = mapped_column(Integer, nullable=True)
     next_backup_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -157,6 +167,10 @@ class Message(Base):
     raw_relpath: Mapped[str] = mapped_column(String(500))
     is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # What a PEC provider stamped on this message: certified mail, or a receipt about some.
+    pec_kind: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    # For a receipt, the Message-ID of the message it certifies.
+    pec_reference: Mapped[str | None] = mapped_column(String(1000), nullable=True, index=True)
 
     snapshot: Mapped[Snapshot] = relationship(back_populates="messages")
     folder: Mapped[Folder] = relationship(back_populates="messages")

@@ -71,7 +71,7 @@
     <aside id="folder-sidebar" class="folder-sidebar">
       <div class="archive-account">
         <button id="archive-back" class="back-button" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg><span data-i18n="navDashboard">Dashboard</span></button>
-        <div class="archive-identity"><span id="archive-avatar" class="ds-avatar account-avatar"></span><div><h2 id="archive-name"></h2><p id="archive-email" class="muted"></p></div></div>
+        <div class="archive-identity"><span id="archive-avatar" class="ds-avatar account-avatar"></span><div><h2 id="archive-name"></h2><p id="archive-email" class="muted"></p></div></div><div id="pec-toolbar" class="pec-toolbar hidden"><button id="pec-refresh" class="secondary" type="button" data-i18n="pecRefresh">Aggiorna</button><button id="pec-compose" class="primary" type="button" data-i18n="pecCompose">Nuova PEC</button><small id="pec-sync-status" class="muted" role="status"></small></div>
       </div>
       <div class="version-picker"><label for="version-select" data-i18n="backupVersionLabel">Versione backup</label><select id="version-select"></select><button id="versions-button" class="text-button" type="button" data-i18n="versionDetails">Dettagli versioni</button></div>
       <div id="protection-warning" class="protection-warning hidden"></div>
@@ -106,13 +106,28 @@
       <div class="form-grid"><label><span data-i18n="displayName">Nome visualizzato</span><input name="display_name" maxlength="200" required></label><label><span data-i18n="emailAddress">Indirizzo email</span><input name="email" type="email" required></label></div>
       <div class="form-section"><span class="step-number">2</span><div><h3 data-i18n="accessStep">Accesso casella</h3><p data-i18n="accessStepCopy">Scegli il provider. Per Microsoft puoi usare OAuth senza inserire password in EMBOXA.</p></div></div>
       <div class="form-grid">
-        <label><span data-i18n="providerLabel">Provider</span><select id="provider-preset"><option value="" data-i18n="customImap">IMAP personalizzato</option><option value="gmail" data-i18n="gmailOption">Google · Gmail</option><option value="outlook" data-i18n="outlookOption">Microsoft · Outlook, Hotmail, Live, Microsoft 365</option><option value="icloud" data-i18n="icloudOption">iCloud Mail</option><option value="yahoo" data-i18n="yahooOption">Yahoo Mail</option></select></label>
+        <label><span data-i18n="providerLabel">Provider</span><select id="provider-preset"><option value="" data-i18n="customImap">IMAP personalizzato</option><option value="gmail" data-i18n="gmailOption">Google · Gmail</option><option value="outlook" data-i18n="outlookOption">Microsoft · Outlook, Hotmail, Live, Microsoft 365</option><option value="icloud" data-i18n="icloudOption">iCloud Mail</option><option value="yahoo" data-i18n="yahooOption">Yahoo Mail</option><option value="pec-aruba" data-i18n="pecAruba">Aruba PEC</option><option value="pec-legalmail" data-i18n="pecLegalmail">Legalmail · InfoCert</option><option value="pec-other" data-i18n="pecOther">Altro gestore PEC</option></select></label>
         <div id="microsoft-oauth-box" class="oauth-connect hidden"><div><b data-i18n="recommended">Consigliato</b><small data-i18n="connectMicrosoftHint">Collega con Microsoft: nessuna password salvata in EMBOXA.</small></div><button id="microsoft-connect" class="secondary" type="button" data-i18n="connectMicrosoft">Collega con Microsoft</button><button id="microsoft-manual" class="text-button" type="button" data-i18n="advancedManualImap">Avanzate: configura manualmente con IMAP</button></div>
         <label class="imap-field"><span data-i18n="imapServer">Server IMAP</span><input name="imap_host" maxlength="255" required></label>
         <label class="imap-field"><span data-i18n="port">Porta</span><input name="imap_port" type="number" min="1" max="65535" value="993" required></label>
         <label class="imap-field"><span data-i18n="security">Sicurezza</span><select name="security"><option value="ssl" data-i18n="sslTls">SSL/TLS</option><option value="starttls" data-i18n="starttls">STARTTLS</option><option value="plain" data-i18n="noneNotRecommended">Nessuna (sconsigliata)</option></select></label>
         <label class="span-2 imap-field"><span data-i18n="username">Username</span><input name="imap_username" maxlength="320" required></label>
         <label class="span-2 imap-field"><span data-i18n="passwordAppPassword">Password / app password</span><input name="password" type="password" maxlength="1024" autocomplete="new-password"><small id="password-hint" data-i18n="passwordHintRequired">Obbligatoria per un nuovo account.</small></label>
+      </div>
+      <div id="pec-section" class="pec-section hidden">
+        <label class="pec-toggle"><input type="checkbox" name="is_pec"><span><b data-i18n="pecToggle">Casella PEC</b><small data-i18n="pecToggleCopy">Oltre a ricevere, invia posta certificata direttamente da EMBOXA.</small></span></label>
+        <div id="pec-smtp" class="hidden">
+          <div class="form-section"><span class="step-number">3</span><div><h3 data-i18n="pecSendStep">Invio PEC</h3><p data-i18n="pecSendStepCopy">Il server SMTP del tuo gestore PEC. Le credenziali sono quasi sempre le stesse della ricezione.</p></div></div>
+          <div class="form-grid">
+            <label><span data-i18n="smtpServer">Server SMTP</span><input name="smtp_host" maxlength="255"></label>
+            <label><span data-i18n="port">Porta</span><input name="smtp_port" type="number" min="1" max="65535" value="465"></label>
+            <label><span data-i18n="security">Sicurezza</span><select name="smtp_security"><option value="ssl" data-i18n="sslTls">SSL/TLS</option><option value="starttls" data-i18n="starttls">STARTTLS</option></select></label>
+            <label><span data-i18n="pecDefaultReceipt">Ricevuta predefinita</span><select name="pec_receipt_type"><option value="completa" data-i18n="receiptCompleta">Completa</option><option value="breve" data-i18n="receiptBreve">Breve</option><option value="sintetica" data-i18n="receiptSintetica">Sintetica</option></select></label>
+            <label class="span-2"><span data-i18n="smtpUsername">Username SMTP</span><input name="smtp_username" maxlength="320"></label>
+            <label class="span-2"><span data-i18n="smtpPassword">Password SMTP</span><input name="smtp_password" type="password" maxlength="1024" autocomplete="new-password"><small id="smtp-password-hint" data-i18n="smtpPasswordHint">Lascia vuoto per usare la stessa della ricezione.</small></label>
+          </div>
+          <div class="pec-test-row"><button id="test-smtp" type="button" class="secondary" data-i18n="testSending">Test invio</button><span id="smtp-test-status" class="form-status" role="status"></span></div>
+        </div>
       </div>
       <details class="advanced-settings">
         <summary><span data-i18n="advancedSettings">Impostazioni avanzate</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></summary>
@@ -125,6 +140,27 @@
       </details>
       <p id="account-form-status" class="form-status" role="status"></p>
       <div class="dialog-actions"><button id="test-connection" type="button" class="secondary" data-i18n="testConnection">Test connessione</button><span class="grow"></span><button type="button" class="ghost" data-close="account-dialog" data-i18n="cancel">Annulla</button><button id="save-account" type="submit" class="primary" data-i18n="saveAccountBtn">Salva account</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="pec-compose-dialog" class="dialog pec-compose-dialog">
+    <form id="pec-compose-form">
+      <div class="dialog-heading"><div><p class="eyebrow" data-i18n="pecComposeEyebrow">POSTA ELETTRONICA CERTIFICATA</p><h2 data-i18n="pecComposeTitle">Nuova PEC</h2><p id="pec-compose-from" class="muted"></p></div><button type="button" class="icon-button" data-close="pec-compose-dialog" data-i18n-aria-label="close" aria-label="Chiudi"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button></div>
+      <div class="form-grid">
+        <label class="span-2"><span data-i18n="pecTo">A</span><input name="to" required autocomplete="off" data-i18n-placeholder="pecToPlaceholder" placeholder="destinatario@pec.it, altro@pec.it"></label>
+        <label class="span-2"><span data-i18n="pecCc">Cc</span><input name="cc" autocomplete="off"></label>
+        <label class="span-2"><span data-i18n="pecSubject">Oggetto</span><input name="subject" maxlength="998" required></label>
+        <label class="span-2"><span data-i18n="pecBody">Testo</span><textarea name="body" rows="10"></textarea></label>
+        <label class="span-2"><span data-i18n="pecAttachments">Allegati</span><input name="files" type="file" multiple><small data-i18n="pecAttachmentsHint">Fino a 50 MB in tutto; molti gestori PEC accettano meno.</small></label>
+      </div>
+      <fieldset class="receipt-choice">
+        <legend data-i18n="pecReceiptType">Tipo di ricevuta di consegna</legend>
+        <label class="choice-card"><input type="radio" name="receipt_type" value="completa"><span><b data-i18n="receiptCompleta">Completa</b><small data-i18n="receiptCompletaCopy">Contiene copia del messaggio e degli allegati: la prova più completa.</small></span></label>
+        <label class="choice-card"><input type="radio" name="receipt_type" value="breve"><span><b data-i18n="receiptBreve">Breve</b><small data-i18n="receiptBreveCopy">Al posto degli allegati ne riporta l'impronta. Utile con allegati pesanti.</small></span></label>
+        <label class="choice-card"><input type="radio" name="receipt_type" value="sintetica"><span><b data-i18n="receiptSintetica">Sintetica</b><small data-i18n="receiptSinteticaCopy">Solo i dati di consegna, senza il contenuto.</small></span></label>
+      </fieldset>
+      <p id="pec-compose-status" class="form-status" role="status"></p>
+      <div class="dialog-actions"><span class="grow"></span><button type="button" class="ghost" data-close="pec-compose-dialog" data-i18n="cancel">Annulla</button><button id="pec-send" type="submit" class="primary" data-i18n="pecSend">Invia PEC</button></div>
     </form>
   </dialog>
 

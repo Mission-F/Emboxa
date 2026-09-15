@@ -237,6 +237,14 @@ function accountPayload(form) {
   data.schedule_interval_hours = data.schedule_mode === 'interval' ? Number(data.schedule_interval_hours) : null;
   data.retention_versions = Number(data.retention_versions || 3);
   data.root_folder = data.root_folder || null; data.password = data.password || null;
+  data.is_pec = isPlus() && Boolean(form.is_pec?.checked);
+  if (data.is_pec) {
+    data.smtp_port = Number(data.smtp_port || 465);
+    data.smtp_username = data.smtp_username || data.imap_username;
+    data.smtp_password = data.smtp_password || null;
+  } else {
+    for (const key of ['smtp_host', 'smtp_port', 'smtp_username', 'smtp_password']) data[key] = null;
+  }
   return data;
 }
 function openAccountDialog(account = null) {
@@ -248,6 +256,11 @@ function openAccountDialog(account = null) {
   $('.advanced-settings').open = Boolean(account?.root_folder || (account?.schedule_mode && account.schedule_mode !== 'disabled'));
   $('#interval-label').classList.toggle('hidden', form.schedule_mode.value !== 'interval');
   microsoftManual = Boolean(account);
+  form.is_pec.checked = Boolean(account?.is_pec);
+  if (!account?.is_pec) { form.smtp_port.value = 465; form.smtp_security.value = 'ssl'; form.pec_receipt_type.value = 'completa'; }
+  $('#smtp-password-hint').textContent = account?.has_smtp_password ? t('smtpPasswordKeep') : t('smtpPasswordHint');
+  $('#smtp-test-status').textContent = '';
+  syncPecSection();
   syncProviderMode();
   const status = $('#account-form-status'); status.textContent = ''; status.className = 'form-status';
   $('#account-dialog').showModal();
@@ -692,10 +705,131 @@ $('#provider-preset').addEventListener('change', event => {
   // Yahoo runs two IMAP hosts: imap.mail.yahoo.com for two-way sync, which exposes only part of a
   // large mailbox, and export.imap.mail.yahoo.com for downloading all of it. Backing up wants the
   // second one — the first silently reported 16 313 messages for a 38 211-message inbox.
-  const presets={gmail:['imap.gmail.com',993,'ssl'],outlook:['outlook.office365.com',993,'ssl'],icloud:['imap.mail.me.com',993,'ssl'],yahoo:['export.imap.mail.yahoo.com',993,'ssl']};
-  const value=presets[event.target.value]; if(value){const form=$('#account-form');form.imap_host.value=value[0];form.imap_port.value=value[1];form.security.value=value[2];}
+  // PEC providers publish one server for receiving and another for sending. Only the two most
+  // common are filled in: a wrong preset fails with an authentication error that looks exactly
+  // like a wrong password, which is worse than typing the host by hand.
+  const presets={gmail:['imap.gmail.com',993,'ssl'],outlook:['outlook.office365.com',993,'ssl'],icloud:['imap.mail.me.com',993,'ssl'],yahoo:['export.imap.mail.yahoo.com',993,'ssl'],
+    'pec-aruba':['imaps.pec.aruba.it',993,'ssl','smtps.pec.aruba.it',465,'ssl'],
+    'pec-legalmail':['mbox.cert.legalmail.it',993,'ssl','sendm.cert.legalmail.it',465,'ssl'],
+    'pec-other':[]};
+  const form=$('#account-form'), value=presets[event.target.value];
+  if(value&&value.length){form.imap_host.value=value[0];form.imap_port.value=value[1];form.security.value=value[2];}
+  if(event.target.value.startsWith('pec-')){form.is_pec.checked=true;if(value[3]){form.smtp_host.value=value[3];form.smtp_port.value=value[4];form.smtp_security.value=value[5];}}
+  syncPecSection();
 });
 $('#account-form').schedule_mode.addEventListener('change', event => $('#interval-label').classList.toggle('hidden',event.target.value!=='interval'));
+
+/* ---------------------------------------------------------------- PEC client */
+
+// The plan is rendered into the page, so it is known before /api/web/usage answers — without
+// this, opening the account form in the first second hid the PEC section for a PLUS user.
+function isPlus() { return (state.plan || document.querySelector('meta[name="web-plan"]')?.content) === 'PLUS'; }
+
+function syncPecSection() {
+  const form = $('#account-form'), plus = isPlus(), on = plus && form.is_pec.checked;
+  $('#pec-section').classList.toggle('hidden', !plus);
+  $$('#provider-preset option[value^="pec-"]').forEach(option => { option.hidden = !plus; option.disabled = !plus; });
+  $('#pec-smtp').classList.toggle('hidden', !on);
+  form.smtp_host.required = on; form.smtp_port.required = on;
+}
+$('#account-form').is_pec.addEventListener('change', syncPecSection);
+
+$('#test-smtp').addEventListener('click', async () => {
+  const form = $('#account-form'), status = $('#smtp-test-status');
+  status.className = 'form-status'; status.textContent = t('verifyingConnection');
+  try {
+    await api('/api/pec/test-smtp', {method: 'POST', body: JSON.stringify({
+      account_id: form.account_id.value ? Number(form.account_id.value) : null,
+      smtp_host: form.smtp_host.value, smtp_port: Number(form.smtp_port.value || 465),
+      smtp_security: form.smtp_security.value,
+      smtp_username: form.smtp_username.value || form.imap_username.value,
+      smtp_password: form.smtp_password.value || form.password.value || null,
+    })});
+    status.textContent = t('smtpTestOk'); status.className = 'form-status success';
+  } catch (error) { status.textContent = error.message; status.className = 'form-status error'; }
+});
+
+// Receipts are colour-coded by what they mean to the sender, not by their technical name: a
+// "mancata consegna" has to stand out in a list of hundreds.
+const PEC_TONES = {accettazione: 'info', 'presa-in-carico': 'info', consegna: 'ok', certificata: 'accent',
+  'mancata-consegna': 'bad', 'non-accettazione': 'bad', virus: 'bad', anomalia: 'bad'};
+function pecBadge(kind) {
+  if (!kind) return '';
+  return `<span class="pec-badge pec-${PEC_TONES[kind] || 'info'}">${esc(t(`pecKind_${kind.replace(/-/g, '_')}`))}</span>`;
+}
+
+const PEC_RECEIPT_KINDS = new Set(['accettazione', 'presa-in-carico', 'consegna', 'mancata-consegna', 'non-accettazione', 'virus', 'anomalia']);
+function pecReplyButton(message) {
+  if (!(state.account?.is_pec && isPlus()) || PEC_RECEIPT_KINDS.has(message.pec_kind)) return '';
+  return `<button class="secondary" data-pec-reply="${message.id}" type="button">${t('pecReply')}</button>`;
+}
+
+async function refreshPec() {
+  const account = state.account; if (!account) return;
+  const button = $('#pec-refresh'), status = $('#pec-sync-status');
+  button.disabled = true; status.textContent = t('pecChecking');
+  try {
+    let job = await api(`/api/accounts/${account.id}/pec/sync`, {method: 'POST'});
+    while (job.status === 'queued' || job.status === 'running') {
+      await wait(1000);
+      job = await api(job.status_url);
+      if (job.detail) status.textContent = job.detail;
+    }
+    if (job.status === 'failed') throw new Error(job.error || job.detail);
+    status.textContent = job.detail;
+    const [folders] = await Promise.all([api(`/api/accounts/${account.id}/folders`), loadMessages(), loadStats()]);
+    state.folders = folders; renderFolders();
+    loadAccounts(true);
+  } catch (error) { status.textContent = ''; toast(error.message, 'error'); }
+  finally { button.disabled = false; }
+}
+
+function openPecCompose(prefill = {}) {
+  const account = state.account, form = $('#pec-compose-form');
+  form.reset();
+  $('#pec-compose-from').textContent = `${t('pecFrom')} ${account.email}`;
+  form.elements.to.value = prefill.to || '';
+  form.elements.subject.value = prefill.subject || '';
+  form.elements.body.value = prefill.body || '';
+  const receipt = account.pec_receipt_type || 'completa';
+  form.querySelector(`input[name="receipt_type"][value="${receipt}"]`).checked = true;
+  $('#pec-compose-status').textContent = ''; $('#pec-send').disabled = false;
+  $('#pec-compose-dialog').showModal();
+}
+
+$('#pec-refresh').addEventListener('click', refreshPec);
+$('#pec-compose').addEventListener('click', () => openPecCompose());
+
+$('#reader').addEventListener('click', event => {
+  const button = event.target.closest('[data-pec-reply]'); if (!button) return;
+  const message = (state.lastThread || []).find(item => item.id === Number(button.dataset.pecReply));
+  if (!message) return;
+  const address = (message.sender || '').match(/<([^>]+)>/)?.[1] || message.sender || '';
+  const subject = /^\s*re:/i.test(message.subject || '') ? message.subject : `Re: ${message.subject || ''}`;
+  const quoted = (message.text_body || '').split('\n').map(line => `> ${line}`).join('\n');
+  openPecCompose({to: address, subject, body: `\n\n${date(message.date)} · ${message.sender}:\n${quoted}`});
+});
+
+$('#pec-compose-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const form = event.currentTarget, status = $('#pec-compose-status'), account = state.account;
+  const data = new FormData();
+  for (const name of ['to', 'cc', 'subject', 'body']) data.append(name, form.elements[name].value);
+  data.append('receipt_type', form.querySelector('input[name="receipt_type"]:checked')?.value || 'completa');
+  for (const file of form.elements.files.files) data.append('files', file);
+  $('#pec-send').disabled = true; status.className = 'form-status'; status.textContent = t('pecSending');
+  try {
+    const result = await api(`/api/accounts/${account.id}/pec/send`, {method: 'POST', body: data});
+    $('#pec-compose-dialog').close();
+    if (result.refused.length) toast(`${t('pecSentPartial')} ${result.refused.join(', ')}`, 'error');
+    else toast(t('pecSentOk'));
+    if (!result.saved_to_sent) toast(t('pecNotSavedToSent'), 'error');
+    refreshPec();
+  } catch (error) {
+    status.className = 'form-status error'; status.textContent = error.message; $('#pec-send').disabled = false;
+  }
+});
+
 
 function folderIcon(folder) {
   const name = folder.name.toLowerCase();
@@ -710,6 +844,7 @@ async function openArchive(account) {
   $('#dashboard').classList.add('hidden'); $('#archive').classList.remove('hidden'); $('#search-wrap').classList.remove('hidden');
   $('#archive-name').textContent=account.display_name; $('#archive-email').textContent=account.email; $('#archive-avatar').textContent=account.display_name.charAt(0).toUpperCase(); $('#reader').innerHTML=emptyReader();
   $('#mobile-mailbox-label').textContent=account.display_name; $('#mobile-mailbox-label').classList.remove('hidden');
+  $('#pec-toolbar').classList.toggle('hidden', !(account.is_pec && isPlus())); $('#pec-sync-status').textContent='';
   // Four requests, one round trip. Without a snapshot id the server answers for the current
   // archive, which is also what the version list will pick, so nothing waits on anything.
   state.snapshotId=null; state.versions=[]; state.folders=[];
@@ -743,7 +878,7 @@ async function loadMessages(){
   try {
     const data=await api(`/api/accounts/${state.account.id}/messages?${queryString()}`); state.total=data.total;
     $('#result-count').textContent=`${numberFmt(data.total)} ${t('results')}`; $('#list-title').textContent=state.trash?t('trashFolder'):state.folderId?(state.folders.find(folder=>folder.id===state.folderId)?.name||t('folderSingular')):t('allMessages');
-    $('#message-list').innerHTML=data.items.length?data.items.map(message=>`<button class="message-row ${message.is_read?'':'unread'}" data-message="${message.id}" title="${esc(message.sender||'')}"><span class="row-avatar" aria-hidden="true">${esc(senderInitial(message.sender))}</span><span class="message-main"><span class="message-line"><strong>${esc(senderName(message.sender)||t('unknownSender'))}</strong><time>${date(message.date)}</time></span><span class="message-subject">${esc(message.subject)||t('noSubject')}</span><span class="snippet">${esc(message.snippet)}</span></span><span class="row-marks">${message.has_attachments?icon('paperclip'):''}<span class="star ${message.is_starred?'active':''}">${icon('star')}</span></span></button>`).join(''):`<div class="empty-list">${icon('mail')}<p>${t('noSearchResults')}</p></div>`;
+    $('#message-list').innerHTML=data.items.length?data.items.map(message=>`<button class="message-row ${message.is_read?'':'unread'}" data-message="${message.id}" title="${esc(message.sender||'')}"><span class="row-avatar" aria-hidden="true">${esc(senderInitial(message.sender))}</span><span class="message-main"><span class="message-line"><strong>${esc(senderName(message.sender)||t('unknownSender'))}</strong><time>${date(message.date)}</time></span><span class="message-subject">${pecBadge(message.pec_kind)}${esc(message.subject)||t('noSubject')}</span><span class="snippet">${esc(message.snippet)}</span></span><span class="row-marks">${message.has_attachments?icon('paperclip'):''}<span class="star ${message.is_starred?'active':''}">${icon('star')}</span></span></button>`).join(''):`<div class="empty-list">${icon('mail')}<p>${t('noSearchResults')}</p></div>`;
     const pages=Math.max(1,Math.ceil(data.total/state.pageSize));state.pages=pages;$('#page-label').textContent=`${state.page} ${t('pageOfSeparator')} ${pages}`;$('#prev-page').disabled=$('#first-page').disabled=state.page<=1;$('#next-page').disabled=$('#last-page').disabled=state.page>=pages;
   } catch(error){$('#message-list').innerHTML=`<div class="empty-list error">${esc(error.message)}</div>`;}
 }
@@ -751,8 +886,8 @@ $('#message-list').addEventListener('click',async event=>{const row=event.target
 async function readThread(id){
   const reader=$('#reader');reader.innerHTML=skeleton(4);
   try {
-    const thread=await api(`/api/messages/${id}/thread`);
-    reader.innerHTML=`<header class="reader-heading"><button class="mobile-reader-back ghost" type="button">${icon('arrowLeft')}<span>${t('backToMessages')}</span></button><div><p class="eyebrow">${t('conversationEyebrow')} · ${thread.length}</p><h1>${esc(thread.at(-1)?.subject)}</h1></div></header>`+thread.map(message=>`<section class="thread-message"><details ${message.id===id||thread.length===1?'open':''}><summary><span class="row-avatar" aria-hidden="true">${esc(senderInitial(message.sender))}</span><div><strong>${esc(senderName(message.sender)||t('unknownSender'))}</strong><span>${date(message.date)} · ${esc(folderLeaf(message.folder))}</span></div>${icon('chevronDown','thread-chevron')}</summary><div class="message-toolbar">${message.has_html?`<button class="ghost" data-message-action="remote" data-id="${message.id}" type="button">${t('loadRemoteImages')}</button>`:''}${message.is_deleted?`<button class="secondary" data-message-action="restore" data-id="${message.id}" type="button">${t('restoreMessage')}</button><button class="danger" data-message-action="permanent" data-id="${message.id}" type="button">${t('deletePermanently')}</button>`:`<button class="danger ghost-danger" data-message-action="trash" data-id="${message.id}" type="button">${t('moveToTrash')}</button>`}</div><div class="message-meta"><div><b>${t('toField')}</b> ${esc(message.to||'—')}</div>${message.cc?`<div><b>${t('ccField')}</b> ${esc(message.cc)}</div>`:''}${message.bcc?`<div><b>${t('bccField')}</b> ${esc(message.bcc)}</div>`:''}</div>${message.has_html?`<iframe id="mail-frame-${message.id}" class="mail-frame" sandbox="allow-same-origin" src="${message.render_url}" title="${esc(message.subject||'')}"></iframe>`:`<div class="mail-body"><pre>${esc(message.text_body)}</pre></div>`}${renderAttachments(message)}<div class="raw-link"><a href="${message.raw_url}">${icon('download')}${t('downloadOriginalEml')}</a></div></details></section>`).join('');
+    const thread=await api(`/api/messages/${id}/thread`); state.lastThread=thread;
+    reader.innerHTML=`<header class="reader-heading"><button class="mobile-reader-back ghost" type="button">${icon('arrowLeft')}<span>${t('backToMessages')}</span></button><div><p class="eyebrow">${t('conversationEyebrow')} · ${thread.length}</p><h1>${esc(thread.at(-1)?.subject)}</h1></div></header>`+thread.map(message=>`<section class="thread-message"><details ${message.id===id||thread.length===1?'open':''}><summary><span class="row-avatar" aria-hidden="true">${esc(senderInitial(message.sender))}</span><div><strong>${esc(senderName(message.sender)||t('unknownSender'))}${pecBadge(message.pec_kind)}</strong><span>${date(message.date)} · ${esc(folderLeaf(message.folder))}</span></div>${icon('chevronDown','thread-chevron')}</summary><div class="message-toolbar">${pecReplyButton(message)}${message.has_html?`<button class="ghost" data-message-action="remote" data-id="${message.id}" type="button">${t('loadRemoteImages')}</button>`:''}${message.is_deleted?`<button class="secondary" data-message-action="restore" data-id="${message.id}" type="button">${t('restoreMessage')}</button><button class="danger" data-message-action="permanent" data-id="${message.id}" type="button">${t('deletePermanently')}</button>`:`<button class="danger ghost-danger" data-message-action="trash" data-id="${message.id}" type="button">${t('moveToTrash')}</button>`}</div><div class="message-meta"><div><b>${t('toField')}</b> ${esc(message.to||'—')}</div>${message.cc?`<div><b>${t('ccField')}</b> ${esc(message.cc)}</div>`:''}${message.bcc?`<div><b>${t('bccField')}</b> ${esc(message.bcc)}</div>`:''}</div>${message.has_html?`<iframe id="mail-frame-${message.id}" class="mail-frame" sandbox="allow-same-origin" src="${message.render_url}" title="${esc(message.subject||'')}"></iframe>`:`<div class="mail-body"><pre>${esc(message.text_body)}</pre></div>`}${renderAttachments(message)}<div class="raw-link"><a href="${message.raw_url}">${icon('download')}${t('downloadOriginalEml')}</a></div></details></section>`).join('');
     reader.scrollTop=0;
   } catch(error){reader.innerHTML=`<div class="reader-empty error">${esc(error.message)}</div>`;}
 }

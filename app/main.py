@@ -50,6 +50,10 @@ from webauthn.helpers.structs import (
 )
 
 from .archive import ArchiveError, build_export, clear_account_archive, delete_account, import_archive
+from .security import safe_filename
+from .security import decrypt_secret
+from .security import encrypt_secret
+from .pec import RECEIPT_TYPES, PecError, send_pec, sync_new_messages, test_smtp
 from .mailbox_purge import (PurgeRefused, purge_folder, purge_folder_direct, purge_preview,
                             server_folders)
 from .backup import backup_manager, next_backup_time, recover_interrupted_jobs, rotate_versions, snapshot_root
@@ -98,7 +102,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("emboxa")
 BASE_DIR = Path(__file__).resolve().parent
-ASSET_VERSION = "20260910-2010"
+ASSET_VERSION = "20260915-1200"
 
 
 @asynccontextmanager
@@ -413,6 +417,14 @@ class AccountPayload(BaseModel):
     schedule_mode: Literal["disabled", "daily", "weekly", "interval"] = "disabled"
     schedule_interval_hours: int | None = Field(default=None, ge=1, le=8760)
     retention_versions: int | None = Field(default=None, ge=1, le=100)
+    # PEC: PLUS only, and only then do the sending settings mean anything.
+    is_pec: bool = False
+    smtp_host: str | None = Field(default=None, max_length=255)
+    smtp_port: int | None = Field(default=None, ge=1, le=65535)
+    smtp_security: Literal["ssl", "starttls", "plain"] = "ssl"
+    smtp_username: str | None = Field(default=None, max_length=320)
+    smtp_password: str | None = Field(default=None, max_length=1024)
+    pec_receipt_type: Literal["completa", "breve", "sintetica"] = "completa"
 
 
 class AccountSettingsPayload(BaseModel):
@@ -1554,6 +1566,13 @@ def _account_json(account: Account, job: BackupJob | None = None, db: Session | 
         "is_permanent": account.is_permanent,
         "permanent_locked_until": account.permanent_locked_until,
         "has_archive": bool(account.active_snapshot_id),
+        "is_pec": account.is_pec,
+        "smtp_host": account.smtp_host,
+        "smtp_port": account.smtp_port,
+        "smtp_security": account.smtp_security,
+        "smtp_username": account.smtp_username,
+        "pec_receipt_type": account.pec_receipt_type,
+        "has_smtp_password": bool(account.encrypted_smtp_password),
         "job": _job_json(job) if job else None,
     }
 
@@ -1902,6 +1921,36 @@ def cancel_transfer(transfer_id: int, db: Session = Depends(get_db)):
     return {"ok": True, "job": _transfer_json(job)}
 
 
+def _apply_pec_settings(account: Account, payload: AccountPayload, user: User) -> None:
+    """Store or clear the sending side of a mailbox.
+
+    Unticking PEC clears the SMTP credentials rather than keeping them around unused. A blank
+    SMTP password means "the same as receiving", which is what almost every PEC provider expects;
+    a separate one already stored is kept.
+    """
+    if not payload.is_pec:
+        account.is_pec = False
+        account.smtp_host = account.smtp_port = account.smtp_username = None
+        account.encrypted_smtp_password = None
+        return
+    if user.plan != "PLUS":
+        raise HTTPException(403, "La PEC è riservata al piano PLUS.")
+    if not (payload.smtp_host and payload.smtp_host.strip() and payload.smtp_port):
+        raise HTTPException(422, "Per una casella PEC servono server e porta SMTP.")
+    account.is_pec = True
+    account.smtp_host = payload.smtp_host.strip()
+    account.smtp_port = payload.smtp_port
+    account.smtp_security = payload.smtp_security
+    account.smtp_username = (payload.smtp_username or "").strip() or account.imap_username
+    account.pec_receipt_type = payload.pec_receipt_type
+    if payload.smtp_password:
+        account.encrypted_smtp_password = encrypt_secret(payload.smtp_password)
+    elif not account.encrypted_smtp_password:
+        if not account.encrypted_password:
+            raise HTTPException(422, "Inserisci la password SMTP della casella PEC.")
+        account.encrypted_smtp_password = account.encrypted_password
+
+
 @app.post("/api/accounts", dependencies=[Depends(csrf_guard)])
 def create_account(payload: AccountPayload, user: User = Depends(current_user), db: Session = Depends(get_db)):
     if not payload.password:
@@ -1928,6 +1977,7 @@ def create_account(payload: AccountPayload, user: User = Depends(current_user), 
         retention_versions=payload.retention_versions or get_int_setting("default_backup_retention_versions", 3, db),
         mailbox_identity=identity,
     )
+    _apply_pec_settings(account, payload, user)
     account.next_backup_at = next_backup_time(account)
     db.add(account)
     db.commit()
@@ -1935,7 +1985,8 @@ def create_account(payload: AccountPayload, user: User = Depends(current_user), 
 
 
 @app.put("/api/accounts/{account_id}", dependencies=[Depends(csrf_guard)])
-def update_account(account_id: int, payload: AccountPayload, db: Session = Depends(get_db)):
+def update_account(account_id: int, payload: AccountPayload, user: User = Depends(current_user),
+                   db: Session = Depends(get_db)):
     account = _account_or_404(db, account_id)
     account.display_name = payload.display_name.strip()
     account.email = str(payload.email)
@@ -1952,6 +2003,7 @@ def update_account(account_id: int, payload: AccountPayload, db: Session = Depen
         account.encrypted_password = encrypt_secret(payload.password)
     elif not account.encrypted_password:
         raise HTTPException(422, "Inserisci una password IMAP per attivare questo archivio importato")
+    _apply_pec_settings(account, payload, user)
     account.next_backup_at = next_backup_time(account)
     db.commit()
     return _account_json(account, _running_job(db, account.id), db)
@@ -2190,7 +2242,8 @@ MAINTENANCE_JOB_LOCK = threading.Lock()
 MAINTENANCE_JOB_RETENTION = timedelta(hours=6)
 MAINTENANCE_LABELS = {"clear": "Cancellazione archivio", "delete": "Eliminazione account",
                       "purge": "Svuotamento cartella sul server",
-                      "purge-direct": "Eliminazione diretta dal server"}
+                      "purge-direct": "Eliminazione diretta dal server",
+                      "pec-sync": "Aggiornamento PEC"}
 
 
 def _cleanup_maintenance_jobs() -> None:
@@ -2255,8 +2308,19 @@ def _run_maintenance_job(job_id: str, kind: str, account_id: int, folder: str | 
                        + (f"; {result['untouched']} non erano nell'archivio e sono stati lasciati"
                           if result["untouched"] else "")
                        + (" (interrotto)" if result.get("cancelled") else "") + ".")
-        else:
+        elif kind == "pec-sync":
+            result = sync_new_messages(account_id, progress=progress)
+            summary = f"{result['added']} nuovi messaggi" if result["added"] else "Nessun nuovo messaggio"
+            if result["skipped_folders"]:
+                summary += ("; da rileggere con un backup completo: "
+                            + ", ".join(result["skipped_folders"][:3]))
+            summary += "."
+        elif kind == "delete":
             delete_account(account_id, progress=progress)
+        else:
+            # This used to be a bare `else: delete_account(...)`, so any new kind of job that
+            # forgot its own branch would have deleted the account. Name it or refuse it.
+            raise ValueError(f"Operazione sconosciuta: {kind}")
         _set_maintenance_job(job_id, status="completed", percent=100, finished_at=utcnow(),
                              detail=summary)
     except Exception as error:  # noqa: BLE001 - surfaced to the user through the job
@@ -2427,6 +2491,98 @@ def cancel_maintenance_job(job_id: str, user: User = Depends(current_user)):
             raise HTTPException(404, "Job non trovato")
         job["cancel_requested"] = True
         return _maintenance_job_response(dict(job))
+
+
+class PecSmtpTestPayload(BaseModel):
+    account_id: int | None = None
+    smtp_host: str = Field(min_length=1, max_length=255)
+    smtp_port: int = Field(ge=1, le=65535)
+    smtp_security: Literal["ssl", "starttls", "plain"] = "ssl"
+    smtp_username: str = Field(min_length=1, max_length=320)
+    smtp_password: str | None = Field(default=None, max_length=1024)
+
+
+@app.post("/api/pec/test-smtp", dependencies=[Depends(csrf_guard)])
+def pec_test_smtp(payload: PecSmtpTestPayload, user: User = Depends(current_user),
+                  db: Session = Depends(get_db)):
+    if user.plan != "PLUS":
+        raise HTTPException(403, "La PEC è riservata al piano PLUS.")
+    password = payload.smtp_password
+    if not password and payload.account_id:
+        account = _account_or_404(db, payload.account_id)
+        if account.owner_id != user.id:
+            raise HTTPException(404, "Account non trovato")
+        stored = account.encrypted_smtp_password or account.encrypted_password
+        password = decrypt_secret(stored) if stored else None
+    if not password:
+        raise HTTPException(422, "Inserisci la password SMTP.")
+    try:
+        test_smtp(payload.smtp_host.strip(), payload.smtp_port, payload.smtp_security,
+                  payload.smtp_username.strip(), password)
+    except smtplib.SMTPAuthenticationError as error:
+        raise HTTPException(400, "Credenziali rifiutate dal server di invio.") from error
+    except Exception as error:
+        raise HTTPException(400, f"Server di invio non raggiungibile: {error}") from error
+    return {"ok": True}
+
+
+def _pec_account(db: Session, account_id: int, user: User) -> Account:
+    account = _account_or_404(db, account_id)
+    if account.owner_id != user.id:
+        raise HTTPException(404, "Account non trovato")
+    if user.plan != "PLUS":
+        raise HTTPException(403, "La PEC è riservata al piano PLUS.")
+    if not account.is_pec:
+        raise HTTPException(409, "Questa casella non è configurata come PEC.")
+    return account
+
+
+@app.post("/api/accounts/{account_id}/pec/sync", dependencies=[Depends(csrf_guard)])
+def pec_sync(account_id: int, response: Response, user: User = Depends(current_user),
+             db: Session = Depends(get_db)):
+    account = _pec_account(db, account_id, user)
+    if not account.active_snapshot_id:
+        raise HTTPException(409, "Fai prima un backup completo: l'aggiornamento aggiunge a quello i messaggi nuovi.")
+    if _running_job(db, account_id):
+        raise HTTPException(409, "C'è un backup in corso su questa casella: riprova quando è finito.")
+    response.status_code = 202
+    return _maintenance_job_response(_start_maintenance_job("pec-sync", account_id, user, db))
+
+
+# Most PEC providers accept far less than this; it only stops the server reading a whole disk.
+MAX_PEC_ATTACHMENTS_BYTES = 50 * 1024**2
+
+
+@app.post("/api/accounts/{account_id}/pec/send", dependencies=[Depends(csrf_guard)])
+def pec_send(account_id: int, to: str = Form(..., max_length=4000), cc: str = Form("", max_length=4000),
+             subject: str = Form("", max_length=998), body: str = Form("", max_length=1_000_000),
+             receipt_type: str = Form("completa"), files: list[UploadFile] = File(default=[]),
+             user: User = Depends(current_user), db: Session = Depends(get_db)):
+    _pec_account(db, account_id, user)
+    if receipt_type not in RECEIPT_TYPES:
+        raise HTTPException(422, "Tipo di ricevuta non valido: scegli completa, breve o sintetica.")
+    attachments, total = [], 0
+    for upload in files:
+        if not upload.filename:
+            continue
+        data = upload.file.read(MAX_PEC_ATTACHMENTS_BYTES + 1)
+        total += len(data)
+        if total > MAX_PEC_ATTACHMENTS_BYTES:
+            raise HTTPException(413, "Allegati troppo grandi: il totale supera 50 MB.")
+        attachments.append((safe_filename(upload.filename, "allegato"),
+                            upload.content_type or "application/octet-stream", data))
+    try:
+        return send_pec(account_id, to, cc, subject, body, attachments, receipt_type)
+    except PecError as error:
+        raise HTTPException(422, str(error)) from error
+    except smtplib.SMTPRecipientsRefused as error:
+        raise HTTPException(422, "Nessun destinatario accettato dal gestore: "
+                                 + ", ".join(sorted(error.recipients))) from error
+    except smtplib.SMTPAuthenticationError as error:
+        # Not 401: that would send the browser to the EMBOXA login, which is not what failed.
+        raise HTTPException(422, "Credenziali di invio rifiutate dal gestore PEC.") from error
+    except (smtplib.SMTPException, OSError) as error:
+        raise HTTPException(502, f"Invio non riuscito: {error}") from error
 
 
 @app.get("/api/maintenance/jobs/{job_id}", dependencies=[Depends(current_user)])
@@ -3353,7 +3509,7 @@ def list_messages(
         Message.id, Message.folder_id, Message.subject, Message.sender, Message.date_utc,
         Message.internal_date, func.substr(Message.text_body, 1, 600).label("snippet"),
         Message.is_read, Message.is_starred, Message.has_attachments, Message.thread_key,
-        Message.is_deleted,
+        Message.is_deleted, Message.pec_kind,
     )
     rows = db.execute(listing.order_by(*order).offset((page - 1) * page_size).limit(page_size)).all()
     return {
@@ -3364,7 +3520,7 @@ def list_messages(
             "snippet": re.sub(r"\s+", " ", item.snippet or "").strip()[:220],
             "is_read": item.is_read, "is_starred": item.is_starred,
             "has_attachments": item.has_attachments, "thread_key": item.thread_key,
-            "is_deleted": item.is_deleted,
+            "is_deleted": item.is_deleted, "pec_kind": item.pec_kind,
         } for item in rows],
     }
 
@@ -3454,6 +3610,7 @@ def _message_json(message: Message, include_body: bool = True) -> dict:
         "is_starred": message.is_starred, "is_answered": message.is_answered,
         "flags": json.loads(message.flags_json or "[]"), "attachments": attachments,
         "raw_url": f"/api/messages/{message.id}/raw",
+        "pec_kind": message.pec_kind, "pec_reference": message.pec_reference,
     }
     if include_body:
         result["has_html"] = bool(message.html_body.strip())

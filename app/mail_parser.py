@@ -45,6 +45,8 @@ class ParsedMail:
     attachments: list[ParsedAttachment]
     raw_sha256: str
     raw_relpath: str
+    pec_kind: str | None = None
+    pec_reference: str | None = None
 
 
 def _safe_text(value: object | None) -> str:
@@ -125,6 +127,42 @@ def _plain_text_from_html(value: str) -> str:
     return re.sub(r"<[^>]+>", " ", text)
 
 
+# The X-Ricevuta vocabulary a PEC provider uses, folded into the few states a person reads.
+PEC_RECEIPTS = {
+    "accettazione": "accettazione",
+    "non-accettazione": "non-accettazione",
+    "presa-in-carico": "presa-in-carico",
+    "avvenuta-consegna": "consegna",
+    "errore-consegna": "mancata-consegna",
+    "preavviso-errore-consegna": "mancata-consegna",
+    "rilevazione-virus": "virus",
+}
+
+
+def pec_classify(headers) -> tuple[str | None, str | None]:
+    """What an Italian PEC provider says a message is, read from the headers it stamps on it.
+
+    A receipt carries X-Ricevuta and points back at the message it certifies through
+    X-Riferimento-Message-ID; certified mail arrives with X-Trasporto. The PEC technical rules fix
+    these values, so this is a lookup, not a guess. Returns (kind, referenced Message-ID).
+    """
+    found: dict[str, str] = {}
+    for name, value in headers:
+        key = str(name).strip().lower()
+        if key in {"x-ricevuta", "x-trasporto", "x-riferimento-message-id"} and key not in found:
+            found[key] = str(value).strip()
+    reference = _normalise_id(found["x-riferimento-message-id"]) if found.get("x-riferimento-message-id") else None
+    receipt = found.get("x-ricevuta", "").lower()
+    if receipt:
+        return PEC_RECEIPTS.get(receipt, receipt[:40]), reference
+    transport = found.get("x-trasporto", "").lower()
+    if transport == "posta-certificata":
+        return "certificata", reference
+    if transport == "errore":
+        return "anomalia", reference
+    return None, None
+
+
 def parse_and_store(raw: bytes, snapshot_dir: Path) -> ParsedMail:
     message = BytesParser(policy=policy.default).parsebytes(raw)
     raw_sha, raw_name = _write_cas(snapshot_dir / "raw", raw)
@@ -186,6 +224,11 @@ def parse_and_store(raw: bytes, snapshot_dir: Path) -> ParsedMail:
         thread_key = "subject:" + hashlib.sha256(normal_subject.encode()).hexdigest()
 
     headers = [(_safe_text(key), _safe_text(value)) for key, value in message.raw_items()]
+    pec_kind, pec_reference = pec_classify(headers)
+    if pec_kind and pec_reference:
+        # A receipt belongs in the conversation of the message it certifies. Threading it by its
+        # own "ACCETTAZIONE: ..." subject would scatter every sent PEC into three loose messages.
+        thread_key = pec_reference
     return ParsedMail(
         message_id=message_id,
         in_reply_to=in_reply_to,
@@ -205,4 +248,6 @@ def parse_and_store(raw: bytes, snapshot_dir: Path) -> ParsedMail:
         attachments=attachments,
         raw_sha256=raw_sha,
         raw_relpath=f"raw/{raw_name}",
+        pec_kind=pec_kind,
+        pec_reference=pec_reference,
     )

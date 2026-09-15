@@ -306,6 +306,77 @@ def _fetch_batch(adapter, account, password, folder_name, uids):
     return adapter, [], list(uids)
 
 
+def store_remote_message(db, snapshot_id: int, folder_id: int, root: Path,
+                         remote_message) -> tuple[int, int]:
+    """Write one downloaded message into a snapshot: its files, its row, attachments, index.
+
+    Shared by the full backup and the incremental PEC refresh, so a message stored one way cannot
+    differ from one stored the other. Returns the attachment count and the bytes written.
+    """
+    parsed = parse_and_store(remote_message.raw, root)
+    flags_lower = {flag.lower() for flag in remote_message.flags}
+    internal_date = remote_message.internal_date
+    if internal_date and internal_date.tzinfo:
+        internal_date = internal_date.astimezone(timezone.utc).replace(tzinfo=None)
+    message = Message(
+        snapshot_id=snapshot_id,
+        folder_id=folder_id,
+        imap_uid=str(remote_message.uid),
+        message_id=parsed.message_id,
+        in_reply_to=parsed.in_reply_to,
+        references_json=parsed.references_json,
+        thread_key=parsed.thread_key,
+        subject=parsed.subject,
+        sender=parsed.sender,
+        recipients_to=parsed.recipients_to,
+        recipients_cc=parsed.recipients_cc,
+        recipients_bcc=parsed.recipients_bcc,
+        reply_to=parsed.reply_to,
+        date_utc=parsed.date_utc,
+        internal_date=internal_date,
+        headers_json=parsed.headers_json,
+        text_body=parsed.text_body,
+        html_body=parsed.html_body,
+        mime_json=parsed.mime_json,
+        flags_json=json.dumps(remote_message.flags, ensure_ascii=False),
+        is_read="\\seen" in flags_lower,
+        is_starred="\\flagged" in flags_lower,
+        is_answered="\\answered" in flags_lower,
+        has_attachments=bool(parsed.attachments),
+        size=len(remote_message.raw),
+        raw_sha256=parsed.raw_sha256,
+        raw_relpath=parsed.raw_relpath,
+        pec_kind=parsed.pec_kind,
+        pec_reference=parsed.pec_reference,
+    )
+    db.add(message)
+    db.flush()
+    for item in parsed.attachments:
+        db.add(Attachment(
+            message_id=message.id,
+            filename=item.filename,
+            content_type=item.content_type,
+            size=item.size,
+            sha256=item.sha256,
+            relpath=item.relpath,
+            content_id=item.content_id,
+            is_inline=item.is_inline,
+        ))
+    recipients = " ".join((parsed.recipients_to, parsed.recipients_cc, parsed.recipients_bcc))
+    db.execute(text(
+        "INSERT INTO message_fts(message_id,snapshot_id,subject,sender,recipients,body) "
+        "VALUES (:message_id,:snapshot_id,:subject,:sender,:recipients,:body)"
+    ), {
+        "message_id": message.id,
+        "snapshot_id": snapshot_id,
+        "subject": parsed.subject,
+        "sender": parsed.sender,
+        "recipients": recipients,
+        "body": parsed.text_body,
+    })
+    return len(parsed.attachments), len(remote_message.raw) + sum(item.size for item in parsed.attachments)
+
+
 def run_backup(job_id: int) -> None:
     db = SessionLocal()
     adapter: StandardIMAPAdapter | MicrosoftGraphAdapter | None = None
@@ -377,67 +448,10 @@ def run_backup(job_id: int) -> None:
         def store(remote_messages) -> None:
             nonlocal processed, attachment_count, smoothed_rate
             for remote_message in remote_messages:
-                parsed = parse_and_store(remote_message.raw, stage_path)
-                flags_lower = {flag.lower() for flag in remote_message.flags}
-                internal_date = remote_message.internal_date
-                if internal_date and internal_date.tzinfo:
-                    internal_date = internal_date.astimezone(timezone.utc).replace(tzinfo=None)
-                message = Message(
-                    snapshot_id=snapshot.id,
-                    folder_id=folder.id,
-                    imap_uid=str(remote_message.uid),
-                    message_id=parsed.message_id,
-                    in_reply_to=parsed.in_reply_to,
-                    references_json=parsed.references_json,
-                    thread_key=parsed.thread_key,
-                    subject=parsed.subject,
-                    sender=parsed.sender,
-                    recipients_to=parsed.recipients_to,
-                    recipients_cc=parsed.recipients_cc,
-                    recipients_bcc=parsed.recipients_bcc,
-                    reply_to=parsed.reply_to,
-                    date_utc=parsed.date_utc,
-                    internal_date=internal_date,
-                    headers_json=parsed.headers_json,
-                    text_body=parsed.text_body,
-                    html_body=parsed.html_body,
-                    mime_json=parsed.mime_json,
-                    flags_json=json.dumps(remote_message.flags, ensure_ascii=False),
-                    is_read="\\seen" in flags_lower,
-                    is_starred="\\flagged" in flags_lower,
-                    is_answered="\\answered" in flags_lower,
-                    has_attachments=bool(parsed.attachments),
-                    size=len(remote_message.raw),
-                    raw_sha256=parsed.raw_sha256,
-                    raw_relpath=parsed.raw_relpath,
-                )
-                db.add(message)
-                db.flush()
-                for item in parsed.attachments:
-                    db.add(Attachment(
-                        message_id=message.id,
-                        filename=item.filename,
-                        content_type=item.content_type,
-                        size=item.size,
-                        sha256=item.sha256,
-                        relpath=item.relpath,
-                        content_id=item.content_id,
-                        is_inline=item.is_inline,
-                    ))
-                recipients = " ".join((parsed.recipients_to, parsed.recipients_cc, parsed.recipients_bcc))
-                db.execute(text(
-                    "INSERT INTO message_fts(message_id,snapshot_id,subject,sender,recipients,body) "
-                    "VALUES (:message_id,:snapshot_id,:subject,:sender,:recipients,:body)"
-                ), {
-                    "message_id": message.id,
-                    "snapshot_id": snapshot.id,
-                    "subject": parsed.subject,
-                    "sender": parsed.sender,
-                    "recipients": recipients,
-                    "body": parsed.text_body,
-                })
+                stored_attachments, _written = store_remote_message(
+                    db, snapshot.id, folder.id, stage_path, remote_message)
                 processed += 1
-                attachment_count += len(parsed.attachments)
+                attachment_count += stored_attachments
 
             job.processed_messages = processed
             job.attachment_count = attachment_count

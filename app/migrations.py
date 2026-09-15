@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+
 import logging
 
+from .mail_parser import pec_classify
 from sqlalchemy import inspect, text
 
 from . import models as _models  # Registers every ORM table before create_all.
@@ -233,6 +236,52 @@ def run_migrations() -> None:
             if "folders_json" not in present:
                 conn.execute(text("ALTER TABLE imap_transfer_jobs ADD COLUMN folders_json TEXT NOT NULL DEFAULT '[]'"))
             conn.execute(text("INSERT OR IGNORE INTO schema_migrations(version) VALUES (15)"))
+
+    if 16 not in applied:
+        log.info("Applying database migration 16 (PEC sending settings)")
+        with engine.begin() as conn:
+            present = {column["name"] for column in inspect(conn).get_columns("accounts")}
+            for column, ddl in (
+                ("is_pec", "BOOLEAN NOT NULL DEFAULT 0"),
+                ("smtp_host", "VARCHAR(255)"),
+                ("smtp_port", "INTEGER"),
+                ("smtp_security", "VARCHAR(20) NOT NULL DEFAULT 'ssl'"),
+                ("smtp_username", "VARCHAR(320)"),
+                ("encrypted_smtp_password", "TEXT"),
+                ("pec_receipt_type", "VARCHAR(20) NOT NULL DEFAULT 'completa'"),
+            ):
+                if column not in present:
+                    conn.execute(text(f"ALTER TABLE accounts ADD COLUMN {column} {ddl}"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_accounts_is_pec ON accounts(is_pec)"))
+            conn.execute(text("INSERT OR IGNORE INTO schema_migrations(version) VALUES (16)"))
+
+    if 17 not in applied:
+        log.info("Applying database migration 17 (PEC receipts)")
+        with engine.begin() as conn:
+            present = {column["name"] for column in inspect(conn).get_columns("messages")}
+            if "pec_kind" not in present:
+                conn.execute(text("ALTER TABLE messages ADD COLUMN pec_kind VARCHAR(40)"))
+            if "pec_reference" not in present:
+                conn.execute(text("ALTER TABLE messages ADD COLUMN pec_reference VARCHAR(1000)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_messages_pec_kind ON messages(pec_kind)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_messages_pec_reference ON messages(pec_reference)"))
+            # Archives made before this already hold receipts. Classify them once so an old PEC
+            # mailbox reads like a new one; the LIKE keeps the scan to rows that can possibly match.
+            rows = conn.execute(text(
+                "SELECT id, headers_json FROM messages "
+                "WHERE headers_json LIKE '%X-Ricevuta%' OR headers_json LIKE '%X-Trasporto%'")).all()
+            for row in rows:
+                try:
+                    headers = [tuple(pair) for pair in json.loads(row.headers_json or "[]")]
+                except ValueError:
+                    continue
+                kind, reference = pec_classify(headers)
+                if kind:
+                    conn.execute(text(
+                        "UPDATE messages SET pec_kind=:kind, pec_reference=:ref, "
+                        "thread_key=COALESCE(:ref, thread_key) WHERE id=:id"),
+                        {"kind": kind, "ref": reference, "id": row.id})
+            conn.execute(text("INSERT OR IGNORE INTO schema_migrations(version) VALUES (17)"))
 
     # Fail clearly if the Python SQLite build unexpectedly lacks FTS5.
     with engine.connect() as conn:
